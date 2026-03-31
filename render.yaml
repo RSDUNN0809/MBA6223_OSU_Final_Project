@@ -1,0 +1,42 @@
+# render.yaml — Render.com Blueprint
+# Connects to: https://github.com/RSDUNN0809/MBA6223_OSU_Final_Project
+# Auto-deploys on every push to main.
+#
+# Deploy steps:
+#   1. Push this repo to GitHub (main branch)
+#   2. Go to https://dashboard.render.com → New → Blueprint
+#   3. Connect your GitHub repo — Render reads this file automatically
+#   4. Set the REFRESH_SECRET environment variable in the Render dashboard
+#      (optional but recommended — protects the /api/refresh endpoint)
+
+services:
+  - type: web
+    name: lsp-stock-prediction
+    runtime: python
+    plan: free                           # Render free tier
+    region: oregon                       # us-west-2 (lowest latency for US markets)
+    branch: main                         # auto-deploy on push to main
+
+    buildCommand: pip install -r requirements.txt
+
+    # gunicorn: 1 worker (512 MB RAM limit), 4 threads for concurrency
+    # 120s timeout accommodates the heavy yfinance batch downloads
+    startCommand: gunicorn app:app --timeout 120 --workers 1 --threads 4 --bind 0.0.0.0:$PORT
+
+    # Health check — Render uses this to confirm the service is up
+    healthCheckPath: /api/status
+
+    envVars:
+      # Python version — must match runtime.txt
+      - key: PYTHON_VERSION
+        value: 3.11.0
+
+      # Secret for protecting the manual /api/refresh endpoint.
+      # Generate a random value: python -c "import secrets; print(secrets.token_hex(32))"
+      # Set this in the Render dashboard under Environment → Add Variable.
+      - key: REFRESH_SECRET
+        generateValue: true             # Render auto-generates a secure random value
+
+      # Optional: set LOG_LEVEL to DEBUG for verbose output during development
+      - key: LOG_LEVEL
+        value: INFO
