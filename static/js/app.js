@@ -417,7 +417,18 @@ function renderHistory(history) {
     return;
   }
 
-  container.innerHTML = history.map(day => {
+  // Column header row
+  const headerHtml = `
+    <div class="history-header">
+      <span class="hist-date">Date</span>
+      <span class="hist-signal-hdr">Signal</span>
+      <span class="hist-return-hdr">Stock Move</span>
+      <span class="hist-result-hdr">Your Gain if Followed</span>
+    </div>
+  `;
+
+  // Data rows
+  const rowsHtml = history.map(day => {
     // Parse date as local noon to avoid timezone-shift issues
     const dateObj = new Date(day.date + 'T12:00:00');
     const dateStr = dateObj.toLocaleDateString('en-US', {
@@ -433,11 +444,11 @@ function renderHistory(history) {
 
     let resultHtml;
     if (day.profitable === true) {
-      resultHtml = `<span class="hist-result win">✓ ${day.signal_return_pct >= 0 ? '+' : ''}${day.signal_return_pct.toFixed(2)}%</span>`;
+      resultHtml = `<span class="hist-result win">✓ +${day.signal_return_pct.toFixed(2)}%</span>`;
     } else if (day.profitable === false) {
       resultHtml = `<span class="hist-result loss">✗ ${day.signal_return_pct.toFixed(2)}%</span>`;
     } else {
-      resultHtml = `<span class="hist-result hold">— HOLD</span>`;
+      resultHtml = `<span class="hist-result hold">— Held (no trade)</span>`;
     }
 
     return `
@@ -449,6 +460,20 @@ function renderHistory(history) {
       </div>
     `;
   }).join('');
+
+  // Summary row — total gain from following all signals (HOLD days = 0%)
+  const totalGain = history.reduce((sum, d) => sum + (d.signal_return_pct ?? 0), 0);
+  const totalSign = totalGain >= 0 ? '+' : '';
+  const totalCls  = totalGain > 0 ? 'win' : totalGain < 0 ? 'loss' : 'hold';
+  const tradedDays = history.filter(d => d.signal !== 'HOLD').length;
+  const summaryHtml = `
+    <div class="history-summary">
+      <span class="history-summary-label">5-Day Total Return (following all signals)</span>
+      <span class="hist-result ${totalCls}" style="margin-left:0">${totalSign}${totalGain.toFixed(2)}% across ${tradedDays} trade${tradedDays !== 1 ? 's' : ''}</span>
+    </div>
+  `;
+
+  container.innerHTML = headerHtml + rowsHtml + summaryHtml;
 }
 
 // ── Google Trends panel ───────────────────────────────────────────────────────
