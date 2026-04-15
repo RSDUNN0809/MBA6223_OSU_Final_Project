@@ -29,7 +29,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from flask import Flask, abort, jsonify, render_template, request
 
-from src.fetcher import get_stock_info, refresh_signals
+from src.fetcher import get_stock_info, get_weekly_history, refresh_signals
 from src.trends import compute_macro_vote, get_macro_trends
 from src.universe import get_sp500
 
@@ -60,6 +60,7 @@ _mem: dict[str, Any] = {
     "universe": None,    # list[dict]
     "signals": {},       # {ticker: {signal, score, votes, details}}
     "metrics": {},       # {ticker: {date, ...fields}}
+    "history": {},       # {ticker: {date: str, data: list[dict]}}
     "trends": None,      # {data: list[dict], fetched_at: str}
     "last_refresh": None,
 }
@@ -164,9 +165,10 @@ def _daily_refresh():
     except Exception as exc:
         logger.error("Signal refresh failed: %s", exc)
 
-    # Step 4: Metrics cache is per-ticker and day-keyed; invalidate today's
-    # entries by clearing so fresh fetches happen on next user request.
+    # Step 4: Metrics and history caches are per-ticker/day; clear so fresh
+    # fetches happen on the next user request.
     _mem["metrics"] = {}
+    _mem["history"] = {}
 
     refresh_ts = now_et.isoformat()
     _save(_REFRESH_FILE, {"last_refresh": refresh_ts})
@@ -299,6 +301,32 @@ def api_stock(ticker: str):
         "votes": signal_data.get("votes", {}),
         **{k: v for k, v in cached_metrics.items() if k != "date"},
     })
+
+
+@app.route("/api/stock/<ticker>/history")
+def api_stock_history(ticker: str):
+    """
+    Return the last 5 completed trading days of signal-vs-outcome data.
+    Each row tells you what signal the model would have given at 9:40 AM ET
+    and whether following that signal would have been profitable by close.
+    Results are cached per ticker per calendar day.
+    """
+    ticker = ticker.upper()
+
+    today_str = date.today().isoformat()
+    cached = _mem["history"].get(ticker, {})
+    if cached.get("date") == today_str:
+        return jsonify({"ticker": ticker, "history": cached["data"]})
+
+    # Derive the current macro vote from cached trends
+    macro_vote = 0
+    if _mem.get("trends") and _mem["trends"].get("data"):
+        from src.trends import compute_macro_vote
+        macro_vote = compute_macro_vote(_mem["trends"]["data"])
+
+    history = get_weekly_history(ticker, macro_vote=macro_vote)
+    _mem["history"][ticker] = {"date": today_str, "data": history}
+    return jsonify({"ticker": ticker, "history": history})
 
 
 @app.route("/api/refresh", methods=["POST"])
