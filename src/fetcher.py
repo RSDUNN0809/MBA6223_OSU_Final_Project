@@ -5,6 +5,7 @@ Public API
 ----------
 get_stock_info(ticker)        → dict of current price + 10 financial metrics
 refresh_signals(tickers, macro_vote) → dict {ticker: {signal, score, votes, details}}
+get_weekly_history(ticker, macro_vote) → list of past-5-day signal-vs-outcome dicts
 
 Signal logic (5 indicators, each ±1 or 0):
   1. Gap         — opening gap vs previous close  (threshold: ±1 %)
@@ -343,3 +344,109 @@ def refresh_signals(tickers: list[str], macro_vote: int = 0) -> dict[str, dict]:
     hold_ct = sum(1 for v in signals.values() if v["signal"] == HOLD)
     logger.info("Signals complete — BUY: %d  SELL: %d  HOLD: %d", buy_ct, sell_ct, hold_ct)
     return signals
+
+
+# ── 1-Week lookback ───────────────────────────────────────────────────────────
+
+def get_weekly_history(ticker: str, macro_vote: int = 0) -> list[dict]:
+    """
+    Compute retrospective signals for the last 5 completed trading days and
+    compare each signal against that day's actual open-to-close return.
+
+    For each past day this returns:
+      date              — ISO date string (YYYY-MM-DD)
+      signal            — BUY / HOLD / SELL (computed from first 10 min bars)
+      score             — raw score (-5 to +5)
+      open              — first market-open price that day
+      close             — last market price that day
+      day_return_pct    — (close / open - 1) × 100
+      signal_return_pct — return you would have captured by following the signal
+                          (positive = made money, negative = lost money)
+      profitable        — True / False / None (None for HOLD)
+    """
+    try:
+        t = yf.Ticker(ticker)
+
+        # 1-minute bars for the past 7 calendar days (covers ~5 trading days)
+        intraday_raw = _with_retry(
+            lambda: t.history(period="7d", interval="1m"),
+            retries=2, base_delay=1.5,
+        )
+        if intraday_raw is None or intraday_raw.empty:
+            logger.info("get_weekly_history(%s): no intraday data", ticker)
+            return []
+        intraday = _to_et(intraday_raw)
+
+        # 30-day daily bars for previous-close reference and average volume
+        daily_raw = _with_retry(
+            lambda: t.history(period="30d", interval="1d"),
+            retries=2, base_delay=1.5,
+        )
+        if daily_raw is None or daily_raw.empty:
+            logger.info("get_weekly_history(%s): no daily data", ticker)
+            return []
+
+        avg_volume = float(daily_raw["Volume"].mean())
+
+        # Normalise daily index to plain date objects for comparison
+        daily_dates = [pd.Timestamp(d).date() for d in daily_raw.index]
+        daily_closes = list(daily_raw["Close"])
+
+        # All unique trading days present in the 1-min data, excluding today
+        today = datetime.now(ET).date()
+        all_days = sorted(set(intraday.index.date))
+        past_days = [d for d in all_days if d < today][-5:]
+
+        results: list[dict] = []
+        for day in past_days:
+            day_bars = intraday[intraday.index.date == day]
+            if day_bars.empty:
+                continue
+
+            # Previous close = most recent daily close strictly before this day
+            before = [(i, c) for i, (d, c) in enumerate(zip(daily_dates, daily_closes)) if d < day]
+            prev_close = float(before[-1][1]) if before else None
+
+            # First-10-minute bars for signal computation
+            bars_10 = _extract_first_10_min(day_bars)
+
+            sig = _compute_signal(bars_10, prev_close, avg_volume, macro_vote)
+
+            # Day open / close (market-hours bars only)
+            market_bars = day_bars[day_bars.index.time >= MARKET_OPEN]
+            if market_bars.empty:
+                continue
+            day_open  = float(market_bars["Open"].iloc[0])
+            day_close = float(market_bars["Close"].iloc[-1])
+            day_return_pct = round(
+                (day_close - day_open) / day_open * 100 if day_open > 0 else 0.0, 2
+            )
+
+            signal = sig["signal"]
+            if signal == BUY:
+                signal_return_pct = day_return_pct
+                profitable: Optional[bool] = day_return_pct > 0
+            elif signal == SELL:
+                signal_return_pct = -day_return_pct
+                profitable = day_return_pct < 0
+            else:
+                signal_return_pct = 0.0
+                profitable = None
+
+            results.append({
+                "date": day.isoformat(),
+                "signal": signal,
+                "score": sig["score"],
+                "open": round(day_open, 2),
+                "close": round(day_close, 2),
+                "day_return_pct": day_return_pct,
+                "signal_return_pct": round(signal_return_pct, 2),
+                "profitable": profitable,
+            })
+
+        logger.info("get_weekly_history(%s): %d days returned", ticker, len(results))
+        return results
+
+    except Exception as exc:
+        logger.warning("get_weekly_history(%s) failed: %s", ticker, exc)
+        return []

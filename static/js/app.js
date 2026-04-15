@@ -3,8 +3,9 @@
  *
  * Responsibilities:
  *   1. Load S&P 500 universe → populate searchable dropdown
- *   2. Load Google Trends → render trends panel
+ *   2. Load Google Trends → render trends panel (relative-frequency %)
  *   3. On stock selection → fetch metrics + signal → update stock panel
+ *   4. Fetch 1-week lookback → render historical signal vs outcome
  *
  * All API calls use fetch() with error handling and loading states.
  */
@@ -254,6 +255,9 @@ async function selectStock(ticker) {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     renderStockPanel(data);
+
+    // Start loading history in the background (non-blocking)
+    loadHistory(ticker);
   } catch (err) {
     console.error('Stock fetch failed:', err);
     stockLoading.classList.add('hidden');
@@ -340,6 +344,10 @@ function renderStockPanel(data) {
   // Indicator votes
   renderVotes(data.votes || {});
 
+  // Reset history section to loading spinner
+  document.getElementById('history-list').innerHTML =
+    '<div class="history-loading"><div class="spinner-ring"></div></div>';
+
   // Show panel
   stockLoading.classList.add('hidden');
   stockData.classList.remove('hidden');
@@ -383,6 +391,66 @@ function renderVotes(votes) {
   }).join('');
 }
 
+// ── 1-Week Lookback ───────────────────────────────────────────────────────────
+
+async function loadHistory(ticker) {
+  const container = document.getElementById('history-list');
+  try {
+    const resp = await fetch(`/api/stock/${encodeURIComponent(ticker)}/history`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    // Guard against stale responses if the user switched stocks mid-load
+    if (ticker !== selectedTicker) return;
+    renderHistory(data.history || []);
+  } catch (err) {
+    console.warn('History fetch failed:', err);
+    if (ticker !== selectedTicker) return;
+    container.innerHTML = '<p class="history-empty">Historical data unavailable</p>';
+  }
+}
+
+function renderHistory(history) {
+  const container = document.getElementById('history-list');
+
+  if (!history.length) {
+    container.innerHTML = '<p class="history-empty">No completed trading days available yet</p>';
+    return;
+  }
+
+  container.innerHTML = history.map(day => {
+    // Parse date as local noon to avoid timezone-shift issues
+    const dateObj = new Date(day.date + 'T12:00:00');
+    const dateStr = dateObj.toLocaleDateString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric'
+    });
+
+    const signalCls =
+      day.signal === 'BUY'  ? 'signal-buy'  :
+      day.signal === 'SELL' ? 'signal-sell' : 'signal-hold';
+
+    const retSign = day.day_return_pct >= 0 ? '+' : '';
+    const retCls  = day.day_return_pct >= 0 ? 'positive' : 'negative';
+
+    let resultHtml;
+    if (day.profitable === true) {
+      resultHtml = `<span class="hist-result win">✓ ${day.signal_return_pct >= 0 ? '+' : ''}${day.signal_return_pct.toFixed(2)}%</span>`;
+    } else if (day.profitable === false) {
+      resultHtml = `<span class="hist-result loss">✗ ${day.signal_return_pct.toFixed(2)}%</span>`;
+    } else {
+      resultHtml = `<span class="hist-result hold">— HOLD</span>`;
+    }
+
+    return `
+      <div class="history-item">
+        <span class="hist-date">${dateStr}</span>
+        <span class="hist-signal ${signalCls}">${day.signal}</span>
+        <span class="hist-return ${retCls}">${retSign}${day.day_return_pct.toFixed(2)}%</span>
+        ${resultHtml}
+      </div>
+    `;
+  }).join('');
+}
+
 // ── Google Trends panel ───────────────────────────────────────────────────────
 
 async function loadTrends() {
@@ -399,18 +467,24 @@ async function loadTrends() {
 
 function renderTrends(trends) {
   if (!trends.length) {
-    trendsList.innerHTML = '<p style="color:#444;font-size:11px;padding:8px 0;">Trends unavailable</p>';
+    trendsList.innerHTML = '<p style="color:#476085;font-size:11px;padding:8px 0;">Trends unavailable</p>';
     return;
   }
 
+  // Compute total score for relative-frequency display
+  const totalScore = trends.reduce((sum, t) => sum + t.score, 0) || 1;
+  // Keep max-score for bar proportions (so bars fill the space visually)
   const maxScore = Math.max(...trends.map(t => t.score), 1);
 
   const html = trends.map((t, i) => {
-    const barPct   = Math.round((t.score / maxScore) * 100);
+    const relPct  = Math.round((t.score / totalScore) * 100); // share of total
+    const barPct  = Math.round((t.score / maxScore) * 100);   // visual bar width
     const barClass = barPct >= 70 ? 'high' : barPct >= 40 ? 'medium' : 'low';
-    // HOT = absolute score ≥ 70; NOT = absolute score ≤ 30
-    const badgeCls  = t.score >= 70 ? 'hot' : t.score <= 30 ? 'not' : 'warm';
-    const badgeTxt  = t.score >= 70 ? 'HOT' : t.score <= 30 ? 'NOT' : '';
+
+    // HOT = relative share ≥ 20 %; NOT = share ≤ 5 %
+    const badgeCls = relPct >= 20 ? 'hot' : relPct <= 5 ? 'not' : 'warm';
+    const badgeTxt = relPct >= 20 ? 'HOT' : relPct <= 5 ? 'NOT' : '';
+
     return `
       <div class="trend-item">
         <span class="trend-rank">${i + 1}</span>
@@ -419,7 +493,7 @@ function renderTrends(trends) {
         <div class="trend-bar-wrap">
           <div class="trend-bar ${barClass}" style="width:0%" data-target="${barPct}%"></div>
         </div>
-        <span class="trend-score">${t.score}</span>
+        <span class="trend-score">${relPct}%</span>
       </div>
     `;
   }).join('');
@@ -434,24 +508,31 @@ function renderTrends(trends) {
   });
 
   // Macro vote
-  updateMacroVote(trends);
+  updateMacroVote(trends, totalScore);
 }
 
-function updateMacroVote(trends) {
+function updateMacroVote(trends, totalScore) {
   const voteEl = document.getElementById('macro-vote');
   if (!voteEl) return;
 
+  const total = totalScore || trends.reduce((s, t) => s + t.score, 0) || 1;
+
   const BULLISH = new Set(['stock market', 'S&P 500', 'earnings report']);
   const BEARISH = new Set(['recession', 'unemployment']);
-  const scores = Object.fromEntries(trends.map(t => [t.term, t.score]));
 
-  const bullAvg = [...BULLISH].reduce((s, t) => s + (scores[t] ?? 50), 0) / BULLISH.size;
-  const bearAvg = [...BEARISH].reduce((s, t) => s + (scores[t] ?? 50), 0) / BEARISH.size;
-  const diff = (bullAvg - bearAvg) / 100;
+  // Use relative shares (%) for the vote calculation
+  const relShares = Object.fromEntries(
+    trends.map(t => [t.term, (t.score / total) * 100])
+  );
+
+  const avgShare = 100 / Math.max(trends.length, 1); // ~10% for 10 terms
+  const bullAvg = [...BULLISH].reduce((s, t) => s + (relShares[t] ?? avgShare), 0) / BULLISH.size;
+  const bearAvg = [...BEARISH].reduce((s, t) => s + (relShares[t] ?? avgShare), 0) / BEARISH.size;
+  const diff = (bullAvg - bearAvg) / 100; // normalise to [-1, +1]
 
   let label, cls;
-  if (diff > 0.15)       { label = 'Bullish';  cls = 'bullish'; }
-  else if (diff < -0.15) { label = 'Bearish';  cls = 'bearish'; }
+  if (diff > 0.05)       { label = 'Bullish';  cls = 'bullish'; }
+  else if (diff < -0.05) { label = 'Bearish';  cls = 'bearish'; }
   else                   { label = 'Neutral';  cls = 'neutral'; }
 
   voteEl.textContent = label;
