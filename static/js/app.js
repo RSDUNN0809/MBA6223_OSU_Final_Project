@@ -423,12 +423,15 @@ function renderHistory(history) {
       <span class="hist-date">Date</span>
       <span class="hist-signal-hdr">Signal</span>
       <span class="hist-return-hdr">Stock Move</span>
-      <span class="hist-result-hdr">Your Gain if Followed</span>
+      <span class="hist-result-hdr">Cumul. Gain if Followed</span>
     </div>
   `;
 
-  // Data rows
+  // Data rows — track running cumulative gain
+  let cumulativeGain = 0;
   const rowsHtml = history.map(day => {
+    cumulativeGain += (day.signal_return_pct ?? 0);
+
     // Parse date as local noon to avoid timezone-shift issues
     const dateObj = new Date(day.date + 'T12:00:00');
     const dateStr = dateObj.toLocaleDateString('en-US', {
@@ -442,21 +445,15 @@ function renderHistory(history) {
     const retSign = day.day_return_pct >= 0 ? '+' : '';
     const retCls  = day.day_return_pct >= 0 ? 'positive' : 'negative';
 
-    let resultHtml;
-    if (day.profitable === true) {
-      resultHtml = `<span class="hist-result win">✓ +${day.signal_return_pct.toFixed(2)}%</span>`;
-    } else if (day.profitable === false) {
-      resultHtml = `<span class="hist-result loss">✗ ${day.signal_return_pct.toFixed(2)}%</span>`;
-    } else {
-      resultHtml = `<span class="hist-result hold">— Held (no trade)</span>`;
-    }
+    const cumSign = cumulativeGain >= 0 ? '+' : '';
+    const cumCls  = cumulativeGain > 0 ? 'win' : cumulativeGain < 0 ? 'loss' : 'hold';
 
     return `
       <div class="history-item">
         <span class="hist-date">${dateStr}</span>
         <span class="hist-signal ${signalCls}">${day.signal}</span>
         <span class="hist-return ${retCls}">${retSign}${day.day_return_pct.toFixed(2)}%</span>
-        ${resultHtml}
+        <span class="hist-result ${cumCls}">${cumSign}${cumulativeGain.toFixed(2)}%</span>
       </div>
     `;
   }).join('');
