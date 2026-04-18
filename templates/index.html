@@ -16,6 +16,10 @@
     <div class="header-left">
       <span class="logo">LSP</span>
       <span class="logo-sub">Longshot Stock Prediction</span>
+      <nav style="margin-left:24px;display:flex;gap:12px;align-items:center;">
+        <a href="/backtest" style="color:#58a6ff;font-size:13px;text-decoration:none;padding:4px 10px;border:1px solid #30363d;border-radius:6px;">Backtest</a>
+        <a href="/api/alpha" target="_blank" style="color:#58a6ff;font-size:13px;text-decoration:none;padding:4px 10px;border:1px solid #30363d;border-radius:6px;">Alpha Ranking</a>
+      </nav>
     </div>
     <div class="header-right">
       <span class="refresh-label">Data as of:</span>
@@ -153,6 +157,9 @@
 
         <!-- Signal detail row -->
         <div class="votes-row" id="votes-row"></div>
+
+        <!-- Depth links -->
+        <div id="depth-links" style="margin-top:10px;"></div>
 
         <!-- Divider -->
         <div class="divider"></div>

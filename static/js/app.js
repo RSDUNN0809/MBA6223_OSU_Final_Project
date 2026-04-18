@@ -344,6 +344,15 @@ function renderStockPanel(data) {
   // Indicator votes
   renderVotes(data.votes || {});
 
+  // Drilldown + backtest links
+  const linksEl = document.getElementById('depth-links');
+  if (linksEl) {
+    linksEl.innerHTML = `
+      <a href="/drilldown/${data.ticker}" target="_blank" style="color:#58a6ff;font-size:12px;text-decoration:none;margin-right:12px;">→ Deep Dive (3-pillar)</a>
+      <a href="/backtest?ticker=${data.ticker}" target="_blank" style="color:#58a6ff;font-size:12px;text-decoration:none;">→ Backtest</a>
+    `;
+  }
+
   // Reset history section to loading spinner
   document.getElementById('history-list').innerHTML =
     '<div class="history-loading"><div class="spinner-ring"></div></div>';
