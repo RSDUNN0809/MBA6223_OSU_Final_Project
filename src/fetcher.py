@@ -314,6 +314,40 @@ def _compute_signal(
 
 # ── Batch signal refresh ──────────────────────────────────────────────────────
 
+def compute_signal_single(ticker: str, macro_vote: int = 0) -> dict:
+    """
+    Fetch live intraday + daily data for a single ticker and compute its signal.
+    Used for on-demand signal generation when a stock is selected in the UI.
+    """
+    t = yf.Ticker(ticker)
+
+    # Today's 1-minute bars
+    try:
+        raw = _with_retry(lambda: t.history(period="1d", interval="1m"), retries=3, base_delay=1.0)
+        intraday = _to_et(raw) if (raw is not None and not raw.empty) else None
+    except Exception as exc:
+        logger.warning("compute_signal_single(%s): intraday fetch failed: %s", ticker, exc)
+        intraday = None
+
+    bars_10 = _extract_first_10_min(intraday) if intraday is not None else None
+
+    # 30-day daily bars for prev_close and avg_volume
+    try:
+        daily = _with_retry(lambda: t.history(period="30d", interval="1d"), retries=3, base_delay=1.0)
+        if daily is not None and not daily.empty and len(daily) >= 2:
+            prev_close = float(daily["Close"].iloc[-2])
+            avg_volume = float(daily["Volume"].mean())
+        else:
+            prev_close = None
+            avg_volume = None
+    except Exception as exc:
+        logger.warning("compute_signal_single(%s): daily fetch failed: %s", ticker, exc)
+        prev_close = None
+        avg_volume = None
+
+    return _compute_signal(bars_10, prev_close, avg_volume, macro_vote)
+
+
 def refresh_signals(tickers: list[str], macro_vote: int = 0) -> dict[str, dict]:
     """
     Download intraday + daily data for all *tickers* and compute signals.
