@@ -360,6 +360,11 @@ function renderStockPanel(data) {
   // Backtest tab — populate inline stats
   loadBacktestStats(data.ticker);
 
+  // Sync dashboard backtest section to selected stock
+  const btInput = document.getElementById('bt-dash-ticker');
+  if (btInput) btInput.value = data.ticker || '';
+  runDashboardBacktest();
+
   // Reset history panel
   document.getElementById('history-list').innerHTML =
     '<div class="history-loading"><div class="spinner-ring"></div></div>';
