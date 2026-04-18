@@ -16,30 +16,6 @@
     <div class="topbar-left">
       <span class="logo">LSP</span>
       <span class="logo-sub">Longshot Stock Prediction</span>
-      <div class="nav-dropdown" id="nav-dropdown">
-        <button class="nav-dropdown-btn" id="nav-dropdown-btn">
-          Explore
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style="margin-left:5px;">
-            <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        </button>
-        <div class="nav-dropdown-menu" id="nav-dropdown-menu">
-          <a href="/backtest" class="nav-dropdown-item">
-            <span class="nav-item-icon">📈</span>
-            <span>
-              <div class="nav-item-title">Backtest</div>
-              <div class="nav-item-sub">1mo · 1yr · 5yr signal replay</div>
-            </span>
-          </a>
-          <a href="/alpha" class="nav-dropdown-item">
-            <span class="nav-item-icon">🏆</span>
-            <span>
-              <div class="nav-item-title">Alpha Ranking</div>
-              <div class="nav-item-sub">Top &amp; bottom 10 by 12-month alpha</div>
-            </span>
-          </a>
-        </div>
-      </div>
     </div>
     <div class="topbar-search" id="search-wrapper">
       <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -262,14 +238,5 @@
   </footer>
 
   <script src="/static/js/app.js"></script>
-  <script>
-    // Nav dropdown toggle
-    const navDropdown = document.getElementById('nav-dropdown');
-    document.getElementById('nav-dropdown-btn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      navDropdown.classList.toggle('open');
-    });
-    document.addEventListener('click', () => navDropdown.classList.remove('open'));
-  </script>
 </body>
 </html>
