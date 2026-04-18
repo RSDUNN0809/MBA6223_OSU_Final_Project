@@ -3,19 +3,20 @@ fetcher.py — yfinance data fetching, financial metrics, and signal computation
 
 Public API
 ----------
-get_stock_info(ticker)        → dict of current price + 10 financial metrics
+get_stock_info(ticker)        → dict of current price + 10 financial metrics + analyst data
 refresh_signals(tickers, macro_vote) → dict {ticker: {signal, score, votes, details}}
 get_weekly_history(ticker, macro_vote) → list of past-5-day signal-vs-outcome dicts
 
-Signal logic (5 indicators, each ±1 or 0):
+Signal logic (9 indicators, each ±1 or 0):
   1. Gap         — opening gap vs previous close    (threshold: ±0.1 %)
   2. Momentum    — first-10-min price return         (threshold: ±0.1 %)
   3. VWAP        — last price vs cumulative VWAP     (threshold: ±0.2 %)
   4. Volume      — first-10-min vol vs expected      (threshold: 1.0×)
-  5. RSI-14      — daily RSI > 50 = bullish regime   (computed from 3mo bars)
-  6. MA-50       — price above 50-day MA = uptrend   (computed from 3mo bars)
-  7. Sector ETF  — sector ETF moving same direction  (intraday return)
-  8. Macro trend — derived from Google Trends        (passed in as macro_vote)
+  5. Macro trend — derived from Google Trends        (passed in as macro_vote)
+  6. RSI-14      — daily RSI > 50 = bullish regime   (computed from 3mo bars)
+  7. MA-50       — price above 50-day MA = uptrend   (computed from 3mo bars)
+  8. Sector ETF  — sector ETF moving same direction  (intraday return)
+  9. Analyst     — Wall St. consensus recommendationMean ≤2.5 → +1, ≥3.5 → −1
 
 Score ≥ +1 → BUY  |  Score ≤ −1 → SELL  |  else → HOLD
 VIX gate: BUY suppressed → HOLD when VIX ≥ 25 (high-fear override)
@@ -111,6 +112,44 @@ def _compute_rsi(close: pd.Series, window: int = _RSI_WINDOW) -> pd.Series:
     rs       = avg_gain / avg_loss.replace(0, np.nan)
     return 100.0 - (100.0 / (1.0 + rs))
 
+# ── Analyst data helper ────────────────────────────────────────────────────────
+
+def _fetch_analyst_data(ticker: str) -> dict:
+    """
+    Fetch analyst consensus fields from .info for a single ticker.
+    Returns a dict with recommendation_mean and target prices (all may be None).
+    """
+    try:
+        info = _with_retry(lambda: yf.Ticker(ticker).info, retries=2, base_delay=1.0)
+        def _g(key):
+            val = info.get(key)
+            return None if val in (None, "N/A", float("inf"), float("-inf")) else val
+        return {
+            "recommendation_mean": _g("recommendationMean"),
+            "target_mean_price":   _g("targetMeanPrice"),
+            "target_high_price":   _g("targetHighPrice"),
+            "target_low_price":    _g("targetLowPrice"),
+            "analyst_count":       _g("numberOfAnalystOpinions"),
+        }
+    except Exception as exc:
+        logger.debug("_fetch_analyst_data(%s) failed: %s", ticker, exc)
+        return {}
+
+
+def _fetch_analyst_batch(tickers: list[str]) -> dict[str, dict]:
+    """Parallel analyst data fetch for all tickers."""
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        futures = {pool.submit(_fetch_analyst_data, t): t for t in tickers}
+        for future in as_completed(futures):
+            t = futures[future]
+            try:
+                results[t] = future.result()
+            except Exception:
+                results[t] = {}
+    return results
+
+
 # Batch download sizes
 _INTRADAY_BATCH = 100
 _DAILY_BATCH = 200
@@ -169,6 +208,10 @@ def get_stock_info(ticker: str) -> dict:
         "roe": None, "pb_ratio": None,
         "week_52_high": None, "week_52_low": None,
         "dividend_yield": None,
+        # Analyst / forward estimates
+        "forward_pe": None, "forward_eps": None,
+        "target_mean_price": None, "target_high_price": None, "target_low_price": None,
+        "analyst_count": None, "recommendation_mean": None,
     }
 
     # ── 1. fast_info — reliable on cloud IPs ─────────────────────────────────
@@ -220,6 +263,15 @@ def get_stock_info(ticker: str) -> dict:
         result["roe"]            = _get("returnOnEquity")
         result["pb_ratio"]       = _get("priceToBook")
         result["dividend_yield"] = _get("dividendYield")
+
+        # Analyst / forward estimates
+        result["forward_pe"]          = _get("forwardPE")
+        result["forward_eps"]         = _get("forwardEps")
+        result["target_mean_price"]   = _get("targetMeanPrice")
+        result["target_high_price"]   = _get("targetHighPrice")
+        result["target_low_price"]    = _get("targetLowPrice")
+        result["analyst_count"]       = _get("numberOfAnalystOpinions")
+        result["recommendation_mean"] = _get("recommendationMean")
 
     except Exception as exc:
         logger.warning("get_stock_info(%s) .info failed: %s", ticker, exc)
@@ -427,9 +479,10 @@ def _compute_signal(
     above_ma50: Optional[bool] = None,
     sector_ret: Optional[float] = None,
     vix_level: Optional[float] = None,
+    analyst_rec: Optional[float] = None,
 ) -> dict:
     """
-    Score a single ticker across up to 8 indicators and return BUY/SELL/HOLD.
+    Score a single ticker across up to 9 indicators and return BUY/SELL/HOLD.
     Returns dict with keys: signal, score, votes, details.
     """
     if bars_10 is None or bars_10.empty:
@@ -495,6 +548,11 @@ def _compute_signal(
         details["sector_ret"] = round(sector_ret * 100, 2)
         votes["sector"] = 1 if sector_ret > 0.0 else (-1 if sector_ret < 0.0 else 0)
 
+    # 9. Analyst consensus: Wall St. recommendationMean (1=Strong Buy, 5=Sell) ─
+    if analyst_rec is not None and np.isfinite(analyst_rec):
+        details["recommendation_mean"] = round(analyst_rec, 2)
+        votes["analyst"] = 1 if analyst_rec <= 2.5 else (-1 if analyst_rec >= 3.5 else 0)
+
     # Aggregate ───────────────────────────────────────────────────────────────
     score = sum(votes.values())
     signal = BUY if score >= _BUY_THRESHOLD else (SELL if score <= _SELL_THRESHOLD else HOLD)
@@ -549,6 +607,10 @@ def compute_signal_single(ticker: str, macro_vote: int = 0) -> dict:
     etf       = _sector_etf(ticker)
     sector_ret = mkt_ctx.get("etf_returns", {}).get(etf)
 
+    # Analyst consensus
+    analyst_data = _fetch_analyst_data(ticker)
+    analyst_rec  = analyst_data.get("recommendation_mean")
+
     return _compute_signal(
         bars_10,
         prev_close       = prev_close,
@@ -558,6 +620,7 @@ def compute_signal_single(ticker: str, macro_vote: int = 0) -> dict:
         above_ma50       = above_ma50,
         sector_ret       = sector_ret,
         vix_level        = vix_level,
+        analyst_rec      = analyst_rec,
     )
 
 
@@ -568,9 +631,10 @@ def refresh_signals(tickers: list[str], macro_vote: int = 0) -> dict[str, dict]:
     """
     logger.info("Refreshing signals for %d tickers (macro_vote=%d)...", len(tickers), macro_vote)
 
-    intraday = _get_intraday_bars(tickers)
-    daily    = _get_daily_info(tickers)
-    mkt_ctx  = _fetch_market_context()
+    intraday    = _get_intraday_bars(tickers)
+    daily       = _get_daily_info(tickers)
+    mkt_ctx     = _fetch_market_context()
+    analyst_map = _fetch_analyst_batch(tickers)
 
     vix_level    = mkt_ctx.get("vix")
     etf_returns  = mkt_ctx.get("etf_returns", {})
@@ -581,6 +645,7 @@ def refresh_signals(tickers: list[str], macro_vote: int = 0) -> dict[str, dict]:
         bars_10 = _extract_first_10_min(bars)
         d       = daily.get(ticker, {})
         etf     = _sector_etf(ticker)
+        a       = analyst_map.get(ticker, {})
         signals[ticker] = _compute_signal(
             bars_10,
             prev_close       = d.get("prev_close"),
@@ -590,6 +655,7 @@ def refresh_signals(tickers: list[str], macro_vote: int = 0) -> dict[str, dict]:
             above_ma50       = d.get("above_ma50"),
             sector_ret       = etf_returns.get(etf),
             vix_level        = vix_level,
+            analyst_rec      = a.get("recommendation_mean"),
         )
 
     buy_ct  = sum(1 for v in signals.values() if v["signal"] == BUY)

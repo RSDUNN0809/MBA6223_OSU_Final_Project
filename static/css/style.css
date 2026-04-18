@@ -794,6 +794,30 @@ body {
   line-height: 1.4;
 }
 
+/* Fundamentals divider */
+.fundamentals-divider {
+  margin: 24px 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.fundamentals-divider::before,
+.fundamentals-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--ink-4);
+}
+.fundamentals-divider-label {
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
 /* Backtest */
 .bt-summary {
   display: flex;

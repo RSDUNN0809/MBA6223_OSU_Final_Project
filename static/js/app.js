@@ -100,6 +100,12 @@ function buildWhy(data) {
   if (v.volume === 1 && d.vol_ratio != null) parts.push(`volume at <strong>${d.vol_ratio.toFixed(1)}×</strong> expected`);
   if (v.macro_trend === 1)  parts.push('supportive macro sentiment');
   if (v.macro_trend === -1) parts.push('bearish macro sentiment');
+  if (v.rsi === 1)   parts.push('RSI in bullish territory (>50)');
+  if (v.rsi === -1)  parts.push('RSI in bearish territory (<50)');
+  if (v.ma50 === 1)  parts.push('price above 50-day MA');
+  if (v.ma50 === -1) parts.push('price below 50-day MA');
+  if (v.analyst === 1)  parts.push('analyst consensus <strong>Buy</strong>');
+  if (v.analyst === -1) parts.push('analyst consensus <strong>Sell</strong>');
 
   if (!parts.length) {
     return signal === 'HOLD'
@@ -125,11 +131,11 @@ function buildNarrative(data) {
   const scoreAbs = Math.abs(score);
   const conviction = scoreAbs >= 6 ? 'strong' : scoreAbs >= 4 ? 'moderate' : 'marginal';
   if (signal === 'BUY')
-    sentences.push(`${ticker} earns a ${conviction} BUY signal (+${score}/5) based on early-session price action.`);
+    sentences.push(`${ticker} earns a ${conviction} BUY signal (+${score}/9) based on early-session price action and analyst consensus.`);
   else if (signal === 'SELL')
-    sentences.push(`${ticker} earns a ${conviction} SELL signal (${score}/5) based on early-session price action.`);
+    sentences.push(`${ticker} earns a ${conviction} SELL signal (${score}/9) based on early-session price action and analyst consensus.`);
   else
-    sentences.push(`${ticker} earns a HOLD signal (${score > 0 ? '+' : ''}${score}/5), reflecting no strong directional bias in the first 10 minutes of trading.`);
+    sentences.push(`${ticker} earns a HOLD signal (${score > 0 ? '+' : ''}${score}/9), reflecting no strong directional bias in the first 10 minutes of trading.`);
 
   const bull = [], bear = [];
   if (votes.gap === 1  && details.gap_pct != null) bull.push(`a bullish opening gap of +${Math.abs(details.gap_pct).toFixed(1)}%`);
@@ -285,10 +291,10 @@ function renderStockPanel(data) {
   const absScore = Math.abs(score);
   const conviction = absScore >= 6 ? 'strong' : absScore >= 4 ? 'moderate' : absScore >= 2 ? 'marginal' : 'mixed';
   document.getElementById('verdict-score').textContent =
-    `${score > 0 ? '+' : ''}${score} / 8 · ${signal === 'HOLD' ? 'mixed' : conviction}`;
+    `${score > 0 ? '+' : ''}${score} / 9 · ${signal === 'HOLD' ? 'mixed' : conviction}`;
 
-  // Score bar: range -8 to +8
-  const MAX_SCORE = 8;
+  // Score bar: range -9 to +9
+  const MAX_SCORE = 9;
   const posPct = Math.min(100, Math.max(0, (score + MAX_SCORE) / (MAX_SCORE * 2) * 100));
   const fillEl = document.getElementById('score-bar-fill');
   const dotEl  = document.getElementById('score-bar-dot');
@@ -324,7 +330,7 @@ function renderStockPanel(data) {
     ? 'Across last 30 scored days'
     : 'Insufficient backtest data';
 
-  // Fundamentals panel
+  // Fundamentals panel — trailing
   setText('m-pe',          fmt(data.pe_ratio,       'plain'));
   setText('m-eps',         data.eps != null ? fmt(data.eps, 'price') : '—');
   setText('m-mktcap',      fmt(data.market_cap,     'large'));
@@ -335,6 +341,32 @@ function renderStockPanel(data) {
   setText('m-pb',          fmt(data.pb_ratio,       'multiple'));
   const dy = data.dividend_yield;
   setText('m-divyield', dy != null ? dy.toFixed(2) + '%' : '—');
+
+  // Fundamentals panel — analyst / forward estimates
+  setText('m-fpe',         fmt(data.forward_pe,  'plain'));
+  setText('m-feps',        data.forward_eps != null ? fmt(data.forward_eps, 'price') : '—');
+  const target = data.target_mean_price;
+  const cp2    = data.current_price;
+  if (target != null && cp2 != null && cp2 > 0) {
+    const upside = ((target - cp2) / cp2) * 100;
+    const sign   = upside >= 0 ? '+' : '';
+    setText('m-target', `$${parseFloat(target).toFixed(2)} (${sign}${upside.toFixed(1)}%)`);
+    const tEl = document.getElementById('m-target');
+    if (tEl) { tEl.classList.toggle('up', upside > 5); tEl.classList.toggle('down', upside < -5); }
+  } else {
+    setText('m-target', '—');
+  }
+  const rec = data.recommendation_mean;
+  if (rec != null) {
+    const recLabel = rec <= 1.5 ? 'Strong Buy' : rec <= 2.5 ? 'Buy' : rec <= 3.5 ? 'Hold' : rec <= 4.5 ? 'Underperform' : 'Sell';
+    const recCls   = rec <= 2.5 ? 'up' : rec >= 3.5 ? 'down' : '';
+    setText('m-rec', `${rec.toFixed(2)} — ${recLabel}`);
+    if (recCls) { const rEl = document.getElementById('m-rec'); if (rEl) rEl.classList.add(recCls); }
+    setText('m-analysts', data.analyst_count != null ? `${data.analyst_count} analysts` : '—');
+  } else {
+    setText('m-rec', '—');
+    setText('m-analysts', '—');
+  }
   applyMetricColors(data);
 
   // 52-week range (Signal tab)
@@ -727,7 +759,7 @@ function plotDashChart(divId, title, rows) {
     margin: { l: 52, r: 52, t: 36, b: 36 },
     xaxis:  { gridcolor: GRID, linecolor: GRID },
     yaxis:  { title: 'Price',  side: 'left',  gridcolor: GRID },
-    yaxis2: { title: 'Score', side: 'right', overlaying: 'y', range: [-8, 8], gridcolor: 'transparent', zeroline: false },
+    yaxis2: { title: 'Score', side: 'right', overlaying: 'y', range: [-9, 9], gridcolor: 'transparent', zeroline: false },
     legend: { orientation: 'h', y: -0.18, font: { size: 11 } },
   }, { displayModeBar: false, responsive: true });
 }
