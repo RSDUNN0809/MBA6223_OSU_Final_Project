@@ -985,6 +985,63 @@ body {
   padding: 20px;
 }
 
+/* ── Score bar (verdict badge) ────────────────────────────────────────────── */
+.score-bar-wrap {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.score-bar-track {
+  position: relative;
+  height: 4px;
+  background: var(--ink-4);
+  border-radius: 2px;
+}
+
+.score-bar-fill {
+  position: absolute;
+  height: 100%;
+  border-radius: 2px;
+  transition: left 0.45s ease, width 0.45s ease;
+}
+.score-bar-fill.buy  { background: var(--buy); }
+.score-bar-fill.sell { background: var(--sell); }
+
+.score-bar-center {
+  position: absolute;
+  left: 50%;
+  top: -4px;
+  width: 1px;
+  height: 12px;
+  background: var(--ink-3);
+  transform: translateX(-50%);
+}
+
+.score-bar-dot {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--paper);
+  transform: translate(-50%, -50%);
+  transition: left 0.45s ease, background-color 0.3s;
+  background: var(--ink-3);
+}
+.score-bar-dot.buy  { background: var(--buy); }
+.score-bar-dot.sell { background: var(--sell); }
+.score-bar-dot.hold { background: var(--ink-3); }
+
+.score-bar-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-4);
+  letter-spacing: 0.05em;
+}
+
 /* ── Loading overlay ──────────────────────────────────────────────────────── */
 .stock-loading {
   position: absolute;

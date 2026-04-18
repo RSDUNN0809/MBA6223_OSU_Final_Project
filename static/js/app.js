@@ -123,7 +123,7 @@ function buildNarrative(data) {
   }
 
   const scoreAbs = Math.abs(score);
-  const conviction = scoreAbs >= 4 ? 'strong' : scoreAbs >= 3 ? 'moderate' : 'marginal';
+  const conviction = scoreAbs >= 6 ? 'strong' : scoreAbs >= 4 ? 'moderate' : 'marginal';
   if (signal === 'BUY')
     sentences.push(`${ticker} earns a ${conviction} BUY signal (+${score}/5) based on early-session price action.`);
   else if (signal === 'SELL')
@@ -282,9 +282,33 @@ function renderStockPanel(data) {
   badge.className = 'verdict-badge ' + (signal === 'BUY' ? 'buy' : signal === 'SELL' ? 'sell' : 'hold');
   document.getElementById('verdict-text').textContent = signal;
   const score = data.score ?? 0;
-  const conviction = Math.abs(score) >= 4 ? 'strong' : Math.abs(score) >= 3 ? 'moderate' : 'marginal';
+  const absScore = Math.abs(score);
+  const conviction = absScore >= 6 ? 'strong' : absScore >= 4 ? 'moderate' : absScore >= 2 ? 'marginal' : 'mixed';
   document.getElementById('verdict-score').textContent =
-    `${score > 0 ? '+' : ''}${score} / 5 · ${signal === 'HOLD' ? 'mixed' : conviction}`;
+    `${score > 0 ? '+' : ''}${score} / 8 · ${signal === 'HOLD' ? 'mixed' : conviction}`;
+
+  // Score bar: range -8 to +8
+  const MAX_SCORE = 8;
+  const posPct = Math.min(100, Math.max(0, (score + MAX_SCORE) / (MAX_SCORE * 2) * 100));
+  const fillEl = document.getElementById('score-bar-fill');
+  const dotEl  = document.getElementById('score-bar-dot');
+  if (fillEl && dotEl) {
+    dotEl.style.left = posPct + '%';
+    dotEl.className  = 'score-bar-dot ' + (signal === 'BUY' ? 'buy' : signal === 'SELL' ? 'sell' : 'hold');
+    if (score > 0) {
+      fillEl.style.left  = '50%';
+      fillEl.style.width = (posPct - 50) + '%';
+      fillEl.className   = 'score-bar-fill buy';
+    } else if (score < 0) {
+      fillEl.style.left  = posPct + '%';
+      fillEl.style.width = (50 - posPct) + '%';
+      fillEl.className   = 'score-bar-fill sell';
+    } else {
+      fillEl.style.left  = '50%';
+      fillEl.style.width = '0%';
+      fillEl.className   = 'score-bar-fill';
+    }
+  }
 
   // Why
   document.getElementById('why-text').innerHTML = buildWhy(data);
