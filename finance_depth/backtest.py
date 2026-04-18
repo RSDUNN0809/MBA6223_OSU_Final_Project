@@ -58,15 +58,15 @@ import yfinance as yf
 
 log = logging.getLogger(__name__)
 
-# ── Signal thresholds — must match src/fetcher.py ─────────────────────────────
-_GAP_PCT_THRESHOLD      = 0.1    # lowered — RSI/MA50 now anchor the signal
-_MOMENTUM_PCT_THRESHOLD = 0.1    # lowered — same reason
-_VWAP_PCT_THRESHOLD     = 0.2
-_VOL_HIGH_RATIO         = 1.0    # any vol ≥ avg confirms momentum direction
+# ── Signal thresholds — must match src/fetcher.py (optimizer v4) ──────────────
+_GAP_PCT_THRESHOLD      = 0.5    # optimizer v4: higher bar, analyst weight anchors
+_MOMENTUM_PCT_THRESHOLD = 0.3    # same — cleaner confirmation needed
+_VWAP_PCT_THRESHOLD     = 0.3
+_VOL_HIGH_RATIO         = 2.0    # require stronger volume confirmation
 _VOL_WINDOW             = 20
 _RSI_WINDOW             = 14
 _MA_WINDOW              = 50
-_VIX_GATE               = 25.0   # suppress BUY when VIX ≥ this level
+_VIX_GATE               = 25.0   # keep for live risk management
 _BUY_THRESHOLD          = 1
 _SELL_THRESHOLD         = -1
 

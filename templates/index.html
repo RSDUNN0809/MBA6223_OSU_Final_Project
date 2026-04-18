@@ -61,7 +61,7 @@
                 <div class="score-bar-dot" id="score-bar-dot"></div>
               </div>
               <div class="score-bar-labels">
-                <span>−9</span><span>0</span><span>+9</span>
+                <span>−11</span><span>0</span><span>+11</span>
               </div>
             </div>
           </div>
@@ -139,12 +139,17 @@
         <div class="fundamentals-divider">
           <span class="fundamentals-divider-label">ANALYST ESTIMATES · Forward-looking</span>
         </div>
+        <div class="analyst-source-note">
+          Data aggregated by <strong>Yahoo Finance</strong> from sell-side analyst research (FactSet / Refinitiv consensus).
+          Updated as analysts publish new reports; typically lags earnings by 1–3 days.
+          Consensus rating counts <strong>3× weight</strong> in the signal score (optimizer-tuned).
+        </div>
         <div class="metrics-grid">
-          <div class="metric"><div class="m-l">Forward P/E</div><div class="m-v" id="m-fpe">—</div><div class="m-c">Next-12m earnings multiple</div></div>
-          <div class="metric"><div class="m-l">Forward EPS</div><div class="m-v" id="m-feps">—</div><div class="m-c">Projected EPS, next 12 months</div></div>
-          <div class="metric"><div class="m-l">Price target</div><div class="m-v" id="m-target">—</div><div class="m-c">Analyst consensus mean target + % upside</div></div>
+          <div class="metric"><div class="m-l">Forward P/E</div><div class="m-v" id="m-fpe">—</div><div class="m-c">Analyst est. EPS — next 12 months</div></div>
+          <div class="metric"><div class="m-l">Forward EPS</div><div class="m-v" id="m-feps">—</div><div class="m-c">Projected earnings per share, NTM</div></div>
+          <div class="metric"><div class="m-l">Price target</div><div class="m-v" id="m-target">—</div><div class="m-c">Mean analyst target · % upside to current</div></div>
           <div class="metric"><div class="m-l">Consensus</div><div class="m-v" id="m-rec">—</div><div class="m-c">1=Strong Buy · 3=Hold · 5=Sell</div></div>
-          <div class="metric"><div class="m-l">Coverage</div><div class="m-v" id="m-analysts">—</div><div class="m-c">Number of analyst opinions</div></div>
+          <div class="metric"><div class="m-l">Coverage</div><div class="m-v" id="m-analysts">—</div><div class="m-c">Sell-side analysts covering this stock</div></div>
         </div>
       </section>
 

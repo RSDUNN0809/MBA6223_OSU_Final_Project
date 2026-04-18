@@ -16,8 +16,9 @@ Signal logic (9 indicators, each ±1 or 0):
   6. RSI-14      — daily RSI > 50 = bullish regime   (computed from 3mo bars)
   7. MA-50       — price above 50-day MA = uptrend   (computed from 3mo bars)
   8. Sector ETF  — sector ETF moving same direction  (intraday return)
-  9. Analyst     — Wall St. consensus recommendationMean ≤2.5 → +1, ≥3.5 → −1
+  9. Analyst     — Wall St. consensus recommendationMean ≤2.5 → +3, ≥3.5 → −3 (3× weight)
 
+Max score: +11 (8 single votes + analyst 3×)  Min score: ≈ −10
 Score ≥ +1 → BUY  |  Score ≤ −1 → SELL  |  else → HOLD
 VIX gate: BUY suppressed → HOLD when VIX ≥ 25 (high-fear override)
 Strategy: BUY = long, SELL/HOLD = flat (no short positions)
@@ -41,17 +42,18 @@ logger = logging.getLogger(__name__)
 ET = pytz.timezone("America/New_York")
 MARKET_OPEN = dtime(9, 30)
 
-# Signal thresholds
+# Signal thresholds (optimizer v4 — 9-indicator, analyst_w=3)
 _BUY_THRESHOLD          = 1
 _SELL_THRESHOLD         = -1
-_GAP_PCT_THRESHOLD      = 0.1    # lowered — RSI/MA50 now anchor the signal
-_MOMENTUM_PCT_THRESHOLD = 0.1    # lowered — same reason
-_VWAP_PCT_THRESHOLD     = 0.2
-_VOL_HIGH_RATIO         = 1.0    # any vol ≥ avg confirms momentum direction
+_GAP_PCT_THRESHOLD      = 0.5    # higher bar filters noise; analyst weight anchors
+_MOMENTUM_PCT_THRESHOLD = 0.3    # same — cleaner confirmation needed
+_VWAP_PCT_THRESHOLD     = 0.3
+_VOL_HIGH_RATIO         = 2.0    # require stronger volume confirmation
 _VOL_LOW_RATIO          = 0.5
 _RSI_WINDOW             = 14
 _MA_WINDOW              = 50
-_VIX_GATE               = 25.0
+_VIX_GATE               = 25.0   # keep gate for live risk management despite no optimizer benefit
+_ANALYST_WEIGHT         = 3      # analyst vote counts 3× (optimizer: −0.18 alpha vs −0.37 at 0×)
 
 # Expected fraction of daily volume in the first 10 minutes (open premium)
 _EXPECTED_FIRST10_FRAC = (10 / 390) * 1.5
@@ -549,9 +551,11 @@ def _compute_signal(
         votes["sector"] = 1 if sector_ret > 0.0 else (-1 if sector_ret < 0.0 else 0)
 
     # 9. Analyst consensus: Wall St. recommendationMean (1=Strong Buy, 5=Sell) ─
+    # Weighted _ANALYST_WEIGHT× — optimizer found 3× reduces alpha gap most.
     if analyst_rec is not None and np.isfinite(analyst_rec):
         details["recommendation_mean"] = round(analyst_rec, 2)
-        votes["analyst"] = 1 if analyst_rec <= 2.5 else (-1 if analyst_rec >= 3.5 else 0)
+        raw_vote = 1 if analyst_rec <= 2.5 else (-1 if analyst_rec >= 3.5 else 0)
+        votes["analyst"] = raw_vote * _ANALYST_WEIGHT
 
     # Aggregate ───────────────────────────────────────────────────────────────
     score = sum(votes.values())

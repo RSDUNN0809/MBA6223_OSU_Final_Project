@@ -131,11 +131,11 @@ function buildNarrative(data) {
   const scoreAbs = Math.abs(score);
   const conviction = scoreAbs >= 6 ? 'strong' : scoreAbs >= 4 ? 'moderate' : 'marginal';
   if (signal === 'BUY')
-    sentences.push(`${ticker} earns a ${conviction} BUY signal (+${score}/9) based on early-session price action and analyst consensus.`);
+    sentences.push(`${ticker} earns a ${conviction} BUY signal (+${score}/11) based on early-session price action and analyst consensus.`);
   else if (signal === 'SELL')
-    sentences.push(`${ticker} earns a ${conviction} SELL signal (${score}/9) based on early-session price action and analyst consensus.`);
+    sentences.push(`${ticker} earns a ${conviction} SELL signal (${score}/11) based on early-session price action and analyst consensus.`);
   else
-    sentences.push(`${ticker} earns a HOLD signal (${score > 0 ? '+' : ''}${score}/9), reflecting no strong directional bias in the first 10 minutes of trading.`);
+    sentences.push(`${ticker} earns a HOLD signal (${score > 0 ? '+' : ''}${score}/11), reflecting no strong directional bias in the first 10 minutes of trading.`);
 
   const bull = [], bear = [];
   if (votes.gap === 1  && details.gap_pct != null) bull.push(`a bullish opening gap of +${Math.abs(details.gap_pct).toFixed(1)}%`);
@@ -291,10 +291,10 @@ function renderStockPanel(data) {
   const absScore = Math.abs(score);
   const conviction = absScore >= 6 ? 'strong' : absScore >= 4 ? 'moderate' : absScore >= 2 ? 'marginal' : 'mixed';
   document.getElementById('verdict-score').textContent =
-    `${score > 0 ? '+' : ''}${score} / 9 · ${signal === 'HOLD' ? 'mixed' : conviction}`;
+    `${score > 0 ? '+' : ''}${score} / 11 · ${signal === 'HOLD' ? 'mixed' : conviction}`;
 
-  // Score bar: range -9 to +9
-  const MAX_SCORE = 9;
+  // Score bar: range -11 to +11 (8 single-vote indicators + analyst 3×)
+  const MAX_SCORE = 11;
   const posPct = Math.min(100, Math.max(0, (score + MAX_SCORE) / (MAX_SCORE * 2) * 100));
   const fillEl = document.getElementById('score-bar-fill');
   const dotEl  = document.getElementById('score-bar-dot');
@@ -759,7 +759,7 @@ function plotDashChart(divId, title, rows) {
     margin: { l: 52, r: 52, t: 36, b: 36 },
     xaxis:  { gridcolor: GRID, linecolor: GRID },
     yaxis:  { title: 'Price',  side: 'left',  gridcolor: GRID },
-    yaxis2: { title: 'Score', side: 'right', overlaying: 'y', range: [-9, 9], gridcolor: 'transparent', zeroline: false },
+    yaxis2: { title: 'Score', side: 'right', overlaying: 'y', range: [-11, 11], gridcolor: 'transparent', zeroline: false },
     legend: { orientation: 'h', y: -0.18, font: { size: 11 } },
   }, { displayModeBar: false, responsive: true });
 }
