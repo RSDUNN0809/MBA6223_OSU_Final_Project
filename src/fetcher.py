@@ -82,43 +82,99 @@ def _with_retry(fn, retries: int = 3, base_delay: float = 1.0):
 
 def get_stock_info(ticker: str) -> dict:
     """
-    Fetch the current price and 10 key financial metrics for *ticker*
-    via yfinance.  Returns a flat dict; None values indicate unavailable data.
+    Fetch current price and key financial metrics for *ticker*.
+
+    Strategy (most-reliable first):
+      1. fast_info  — lightweight yfinance endpoint; always works on cloud IPs.
+                      Provides price, 52-week range, market cap.
+      2. .info      — full metadata dict; can be blocked or slow on cloud IPs.
+                      Provides financial ratios (P/E, EPS, margins, etc.)
+                      and company name / sector.
+      3. history()  — fallback for current price and previous close if both
+                      fast_info and .info fail.
+
+    All fields default to None; callers render None as "—".
     """
-    try:
-        info = _with_retry(lambda: yf.Ticker(ticker).info, retries=3, base_delay=1.0)
-    except Exception as exc:
-        logger.warning("get_stock_info(%s) failed: %s", ticker, exc)
-        return {"error": str(exc)}
+    t = yf.Ticker(ticker)
 
-    def _get(key):
-        val = info.get(key)
-        return None if val in (None, "N/A", float("inf"), float("-inf")) else val
-
-    return {
-        "company_name": _get("longName") or _get("shortName"),
-        "sector": _get("sector"),
-        # Current price — try several keys yfinance may populate
-        "current_price": (
-            _get("currentPrice")
-            or _get("regularMarketPrice")
-            or _get("ask")
-            or _get("bid")
-        ),
-        "previous_close": _get("previousClose") or _get("regularMarketPreviousClose"),
-        # 10 required financial metrics
-        "pe_ratio": _get("trailingPE"),
-        "eps": _get("trailingEps"),
-        "market_cap": _get("marketCap"),
-        "revenue": _get("totalRevenue"),
-        "gross_margin": _get("grossMargins"),   # decimal, e.g. 0.432
-        "debt_to_equity": _get("debtToEquity"),
-        "roe": _get("returnOnEquity"),           # decimal, e.g. 1.473
-        "pb_ratio": _get("priceToBook"),
-        "week_52_high": _get("fiftyTwoWeekHigh"),
-        "week_52_low": _get("fiftyTwoWeekLow"),
-        "dividend_yield": _get("dividendYield"), # decimal, e.g. 0.0052
+    result: dict = {
+        "company_name": None, "sector": None,
+        "current_price": None, "previous_close": None,
+        "pe_ratio": None, "eps": None, "market_cap": None,
+        "revenue": None, "gross_margin": None, "debt_to_equity": None,
+        "roe": None, "pb_ratio": None,
+        "week_52_high": None, "week_52_low": None,
+        "dividend_yield": None,
     }
+
+    # ── 1. fast_info — reliable on cloud IPs ─────────────────────────────────
+    try:
+        fi = t.fast_info
+        def _fi(attr):
+            try:
+                v = getattr(fi, attr, None)
+                return None if (v is None or (isinstance(v, float) and not np.isfinite(v))) else v
+            except Exception:
+                return None
+
+        result["current_price"]  = _fi("last_price")
+        result["previous_close"] = _fi("previous_close")
+        result["market_cap"]     = _fi("market_cap")
+        result["week_52_high"]   = _fi("fifty_two_week_high")
+        result["week_52_low"]    = _fi("fifty_two_week_low")
+    except Exception as exc:
+        logger.warning("get_stock_info(%s) fast_info failed: %s", ticker, exc)
+
+    # ── 2. .info — financial ratios + name/sector ─────────────────────────────
+    try:
+        info = _with_retry(lambda: t.info, retries=2, base_delay=1.0)
+
+        def _get(key):
+            val = info.get(key)
+            return None if val in (None, "N/A", float("inf"), float("-inf")) else val
+
+        result["company_name"] = _get("longName") or _get("shortName")
+        result["sector"]       = _get("sector")
+
+        # Fallback price fields if fast_info missed them
+        if result["current_price"] is None:
+            result["current_price"] = _get("currentPrice") or _get("regularMarketPrice")
+        if result["previous_close"] is None:
+            result["previous_close"] = _get("previousClose") or _get("regularMarketPreviousClose")
+        if result["market_cap"] is None:
+            result["market_cap"] = _get("marketCap")
+        if result["week_52_high"] is None:
+            result["week_52_high"] = _get("fiftyTwoWeekHigh")
+        if result["week_52_low"] is None:
+            result["week_52_low"] = _get("fiftyTwoWeekLow")
+
+        result["pe_ratio"]       = _get("trailingPE")
+        result["eps"]            = _get("trailingEps")
+        result["revenue"]        = _get("totalRevenue")
+        result["gross_margin"]   = _get("grossMargins")
+        result["debt_to_equity"] = _get("debtToEquity")
+        result["roe"]            = _get("returnOnEquity")
+        result["pb_ratio"]       = _get("priceToBook")
+        result["dividend_yield"] = _get("dividendYield")
+
+    except Exception as exc:
+        logger.warning("get_stock_info(%s) .info failed: %s", ticker, exc)
+
+    # ── 3. history fallback — if price still missing ──────────────────────────
+    if result["current_price"] is None:
+        try:
+            hist = _with_retry(
+                lambda: t.history(period="5d", interval="1d"),
+                retries=2, base_delay=1.0,
+            )
+            if hist is not None and not hist.empty:
+                result["current_price"] = float(hist["Close"].iloc[-1])
+                if result["previous_close"] is None and len(hist) >= 2:
+                    result["previous_close"] = float(hist["Close"].iloc[-2])
+        except Exception as exc:
+            logger.warning("get_stock_info(%s) history fallback failed: %s", ticker, exc)
+
+    return result
 
 
 # ── Intraday data helpers ──────────────────────────────────────────────────────
