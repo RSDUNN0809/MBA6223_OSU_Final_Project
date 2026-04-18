@@ -124,8 +124,8 @@ function buildExplanation(data) {
   if (votes.volume === 1 && details.vol_ratio != null)
     bullParts.push(`elevated volume at ${details.vol_ratio.toFixed(1)}× expected, confirming momentum`);
 
-  if (votes.macro_trend === 1)  bullParts.push('supportive macro Google Trends sentiment');
-  else if (votes.macro_trend === -1) bearParts.push('elevated bearish macro search terms (recession/unemployment)');
+  if (votes.macro_trend === 1)  bullParts.push('supportive macro market indicators (equities/earnings outperforming)');
+  else if (votes.macro_trend === -1) bearParts.push('elevated macro fear indicators (VIX/recession proxies elevated)');
 
   if (bullParts.length > 0)
     sentences.push(`Bullish factors: ${joinList(bullParts)}.`);
