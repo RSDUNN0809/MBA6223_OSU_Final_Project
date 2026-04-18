@@ -1,25 +1,35 @@
 """
 app.py — Longshot Stock Prediction (LSP) Flask application.
 
-Routes
-------
-GET  /                       Serve the single-page UI
-GET  /api/universe            S&P 500 ticker list (cached)
-GET  /api/trends              Google Trends macro scores (cached)
-GET  /api/stock/<ticker>      Financial metrics + Buy/Hold/Sell signal
-POST /api/refresh             Manual full refresh (requires X-Refresh-Secret header)
+Routes (original)
+-----------------
+GET  /                          Serve the single-page UI
+GET  /api/universe              S&P 500 ticker list (cached)
+GET  /api/trends                Google Trends macro scores (cached)
+GET  /api/stock/<ticker>        Financial metrics + Buy/Hold/Sell signal
+POST /api/refresh               Manual full refresh (requires X-Refresh-Secret header)
+
+Routes (finance-depth layer)
+-----------------------------
+GET  /api/alpha                 12-month trailing-alpha ranking (top 10 + bottom 10)
+GET  /api/composite/<ticker>    Three-pillar composite score for one stock
+GET  /api/backtest/<ticker>     Backtest results (1mo / 1y / 5y)
+GET  /api/backtest/<ticker>/<window>  Single-window backtest
+GET  /drilldown/<ticker>        Per-stock metric drill-down page
+GET  /backtest                  Backtest dashboard page
 
 Daily refresh
 -------------
-APScheduler fires _daily_refresh() at 9:40 AM ET on weekdays.
-A /api/refresh POST endpoint allows external cron services (e.g. cron-job.org)
-to trigger the same refresh — useful when the free-tier dyno has been sleeping.
+APScheduler fires _daily_refresh() at 9:40 AM ET on weekdays. That job now also
+runs the finance-depth pipeline (alpha ranking -> top/bottom 10 -> composite
+scoring) and caches the result to data/depth_cache.json.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import threading
 from datetime import date, datetime
 from functools import wraps
 from typing import Any
@@ -32,6 +42,11 @@ from flask import Flask, abort, jsonify, render_template, request
 from src.fetcher import get_stock_info, get_weekly_history, refresh_signals
 from src.trends import compute_macro_vote, get_macro_trends
 from src.universe import get_sp500
+
+# finance-depth package
+from finance_depth import signals as depth_signals
+from finance_depth import backtest as depth_backtest
+from finance_depth.sentiment_modifier import compute_trend_sentiment
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -54,6 +69,8 @@ _SIGNALS_FILE = os.path.join(DATA_DIR, "signals_cache.json")
 _METRICS_FILE = os.path.join(DATA_DIR, "metrics_cache.json")
 _TRENDS_FILE = os.path.join(DATA_DIR, "trends_cache.json")
 _REFRESH_FILE = os.path.join(DATA_DIR, "last_refresh.json")
+_DEPTH_FILE = os.path.join(DATA_DIR, "depth_cache.json")
+_BACKTEST_FILE = os.path.join(DATA_DIR, "backtest_cache.json")
 
 # ── In-memory cache (fast path; file cache survives across cold restarts) ─────
 _mem: dict[str, Any] = {
@@ -63,6 +80,8 @@ _mem: dict[str, Any] = {
     "history": {},       # {ticker: {date: str, data: list[dict]}}
     "trends": None,      # {data: list[dict], fetched_at: str}
     "last_refresh": None,
+    "depth": None,       # PipelineResult dict
+    "backtests": {},     # {ticker: {date, data}}
 }
 
 
@@ -118,6 +137,18 @@ def _get_trends() -> dict:
     return result
 
 
+# ── Finance-depth cache accessor ───────────────────────────────────────────────
+
+def _get_depth() -> dict | None:
+    """Return the cached three-pillar pipeline result, or None if not computed."""
+    if _mem["depth"]:
+        return _mem["depth"]
+    cached = _load(_DEPTH_FILE, {})
+    if cached:
+        _mem["depth"] = cached
+    return cached or None
+
+
 # ── Daily refresh ──────────────────────────────────────────────────────────────
 
 def _daily_refresh():
@@ -126,7 +157,8 @@ def _daily_refresh():
     1. Refresh Google Trends + compute macro vote
     2. Re-scrape S&P 500 universe
     3. Batch-download intraday data, compute signals for all tickers
-    4. Persist all caches
+    4. Run finance-depth pipeline (alpha rank -> top/bottom 10 -> composite)
+    5. Persist all caches
     """
     logger.info("=== Daily refresh starting ===")
     now_et = datetime.now(ET)
@@ -165,10 +197,37 @@ def _daily_refresh():
     except Exception as exc:
         logger.error("Signal refresh failed: %s", exc)
 
-    # Step 4: Metrics and history caches are per-ticker/day; clear so fresh
-    # fetches happen on the next user request.
+    # Step 4: Finance-depth pipeline
+    try:
+        trend = compute_trend_sentiment()
+        ticker_sector_map = {
+            row["ticker"]: row.get("sector")
+            for row in universe_data
+            if row.get("ticker")
+        }
+        depth_result = depth_signals.run_full_pipeline(
+            tickers,
+            benchmark="^GSPC",
+            top_n=10,
+            bottom_n=10,
+            trend=trend,
+            ticker_sector_map=ticker_sector_map,
+        ).to_dict()
+        _save(_DEPTH_FILE, depth_result)
+        _mem["depth"] = depth_result
+        logger.info(
+            "Depth pipeline: %d top, %d bottom scored; trend shift = %+.0f",
+            len(depth_result.get("alpha_top", [])),
+            len(depth_result.get("alpha_bottom", [])),
+            depth_result.get("trend", {}).get("threshold_shift", 0.0),
+        )
+    except Exception as exc:
+        logger.error("Depth pipeline failed: %s", exc)
+
+    # Step 5: Clear per-ticker caches so fresh fetches happen on next request
     _mem["metrics"] = {}
     _mem["history"] = {}
+    _mem["backtests"] = {}
 
     refresh_ts = now_et.isoformat()
     _save(_REFRESH_FILE, {"last_refresh": refresh_ts})
@@ -212,11 +271,20 @@ def _warm_cache():
     if refresh_info.get("last_refresh"):
         _mem["last_refresh"] = refresh_info["last_refresh"]
 
+    depth_cached = _load(_DEPTH_FILE, {})
+    if depth_cached:
+        _mem["depth"] = depth_cached
+
+    backtest_cached = _load(_BACKTEST_FILE, {})
+    if backtest_cached:
+        _mem["backtests"] = backtest_cached
+
     logger.info(
-        "Cache warmed — universe: %d, signals: %d, trends: %s",
+        "Cache warmed — universe: %d, signals: %d, trends: %s, depth: %s",
         len(_mem["universe"] or []),
         len(_mem["signals"]),
         "yes" if _mem["trends"] else "no",
+        "yes" if _mem["depth"] else "no",
     )
 
 
@@ -255,7 +323,6 @@ def api_universe():
     # Trigger auto-refresh check on first real request of the day
     if _should_auto_refresh():
         logger.info("Auto-refresh triggered via /api/universe request.")
-        import threading
         threading.Thread(target=_daily_refresh, daemon=True).start()
     return jsonify(_get_universe())
 
@@ -294,12 +361,19 @@ def api_stock(ticker: str):
         except Exception:
             pass
 
+    # Attach composite result if available for this ticker
+    composite_block = None
+    depth = _get_depth()
+    if depth and isinstance(depth.get("scored"), dict):
+        composite_block = depth["scored"].get(ticker)
+
     return jsonify({
         "ticker": ticker,
         "signal": signal_data.get("signal", "HOLD"),
         "score": signal_data.get("score", 0),
         "votes": signal_data.get("votes", {}),
         **{k: v for k, v in cached_metrics.items() if k != "date"},
+        "composite": composite_block,   # None if ticker not in top/bottom 20
     })
 
 
@@ -341,7 +415,6 @@ def api_refresh():
     if secret and request.headers.get("X-Refresh-Secret") != secret:
         abort(403)
 
-    import threading
     threading.Thread(target=_daily_refresh, daemon=True).start()
     return jsonify({"status": "refresh_started", "triggered_at": datetime.now(ET).isoformat()})
 
@@ -349,14 +422,108 @@ def api_refresh():
 @app.route("/api/status")
 def api_status():
     """Health / status endpoint — useful for uptime monitors."""
+    depth = _get_depth() or {}
     return jsonify({
         "status": "ok",
         "last_refresh": _mem.get("last_refresh"),
         "universe_count": len(_mem["universe"] or []),
         "signals_count": len(_mem["signals"]),
         "trends_available": _mem["trends"] is not None,
+        "depth_available": bool(depth),
+        "depth_generated_at": depth.get("generated_at"),
+        "trend_shift": (depth.get("trend") or {}).get("threshold_shift"),
         "server_time_et": datetime.now(ET).isoformat(),
     })
+
+
+# ── Routes (finance-depth layer) ───────────────────────────────────────────────
+
+@app.route("/api/alpha")
+def api_alpha():
+    """Return the 12-month trailing-alpha ranking (top 10 + bottom 10)."""
+    depth = _get_depth()
+    if not depth:
+        return jsonify({
+            "error": "depth_not_computed_yet",
+            "hint": "POST /api/refresh or wait for 9:40 AM ET scheduled refresh.",
+        }), 503
+    return jsonify({
+        "generated_at": depth.get("generated_at"),
+        "benchmark": depth.get("benchmark"),
+        "trend": depth.get("trend"),
+        "top": depth.get("alpha_top", []),
+        "bottom": depth.get("alpha_bottom", []),
+    })
+
+
+@app.route("/api/composite/<ticker>")
+def api_composite(ticker: str):
+    """Three-pillar composite breakdown for a single stock."""
+    ticker = ticker.upper()
+    depth = _get_depth() or {}
+    scored = (depth.get("scored") or {}).get(ticker)
+    if scored:
+        return jsonify({"ticker": ticker, "cached": True, **scored})
+
+    # Not in the top/bottom 20 — compute on demand
+    try:
+        result = depth_signals.generate_signal(ticker)
+        return jsonify({"ticker": ticker, "cached": False, **result})
+    except Exception as exc:
+        logger.exception("composite on-demand failed for %s", ticker)
+        return jsonify({"ticker": ticker, "error": str(exc)}), 500
+
+
+@app.route("/api/backtest/<ticker>")
+def api_backtest_all(ticker: str):
+    """Run 1-month, 1-year, 5-year backtests. Cached per-ticker per-day."""
+    ticker = ticker.upper()
+    today_str = date.today().isoformat()
+    cached = _mem["backtests"].get(ticker, {})
+    if cached.get("date") == today_str:
+        return jsonify({"ticker": ticker, **cached["data"]})
+
+    try:
+        result = depth_backtest.run_multi_window_backtest(ticker)
+    except Exception as exc:
+        logger.exception("backtest(%s) failed", ticker)
+        return jsonify({"ticker": ticker, "error": str(exc)}), 500
+
+    _mem["backtests"][ticker] = {"date": today_str, "data": result}
+    try:
+        all_bt = _load(_BACKTEST_FILE, {})
+        all_bt[ticker] = {"date": today_str, "data": result}
+        _save(_BACKTEST_FILE, all_bt)
+    except Exception:
+        pass
+    return jsonify({"ticker": ticker, **result})
+
+
+@app.route("/api/backtest/<ticker>/<window>")
+def api_backtest_window(ticker: str, window: str):
+    """Run a single-window backtest (1mo / 1y / 5y)."""
+    ticker = ticker.upper()
+    window = window.lower()
+    if window not in ("1mo", "1y", "5y"):
+        return jsonify({"error": "window must be 1mo, 1y, or 5y"}), 400
+    try:
+        result = depth_backtest.run_backtest(ticker, window=window)
+    except Exception as exc:
+        logger.exception("backtest(%s, %s) failed", ticker, window)
+        return jsonify({"ticker": ticker, "error": str(exc)}), 500
+    return jsonify(result)
+
+
+@app.route("/drilldown/<ticker>")
+def drilldown(ticker: str):
+    """Per-stock drill-down page showing all three pillars."""
+    return render_template("drilldown.html", ticker=ticker.upper())
+
+
+@app.route("/backtest")
+def backtest_page():
+    """Top-level backtest dashboard page."""
+    return render_template("backtest.html")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

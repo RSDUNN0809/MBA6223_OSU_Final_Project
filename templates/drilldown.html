@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ ticker }} — Drill-down</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --panel: #121826;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --buy: #2ea043;
+      --sell: #f85149;
+      --hold: #d29922;
+      --accent: #58a6ff;
+      --border: #30363d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+    header {
+      padding: 20px 32px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header a { color: var(--accent); text-decoration: none; font-size: 14px; }
+    h1 { margin: 0; font-size: 28px; }
+    main { padding: 24px 32px; max-width: 1100px; margin: 0 auto; }
+    .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .pillar {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .pillar h3 { margin: 0 0 8px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .pillar .score { font-size: 32px; font-weight: 700; }
+    .pillar .detail { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+    .signal {
+      display: inline-block;
+      padding: 4px 14px;
+      border-radius: 999px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+    .signal.BUY  { background: rgba(46,160,67,0.2);  color: var(--buy); }
+    .signal.HOLD { background: rgba(210,153,34,0.2); color: var(--hold); }
+    .signal.SELL { background: rgba(248,81,73,0.2);  color: var(--sell); }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+    .section { margin-top: 32px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .big { font-size: 24px; font-weight: 700; }
+    #loading { color: var(--muted); padding: 24px 0; }
+    a.action {
+      display: inline-block;
+      margin-top: 12px;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 13px;
+    }
+    a.action:hover { border-color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <a href="/">← Dashboard</a>
+    </div>
+    <h1>{{ ticker }} <span class="muted" id="company-name"></span></h1>
+    <div id="signal-pill"></div>
+  </header>
+
+  <main>
+    <div id="loading">Loading composite score for {{ ticker }} …</div>
+    <div id="content" style="display:none">
+      <div class="row">
+        <div class="pillar">
+          <h3>Valuation Pillar</h3>
+          <div class="score" id="val-score">—</div>
+          <div class="detail" id="val-detail">—</div>
+        </div>
+        <div class="pillar">
+          <h3>Momentum Pillar</h3>
+          <div class="score" id="mom-score">—</div>
+          <div class="detail" id="mom-detail">—</div>
+        </div>
+        <div class="pillar">
+          <h3>Intrinsic Value Pillar (DCF)</h3>
+          <div class="score" id="dcf-score">—</div>
+          <div class="detail" id="dcf-detail">—</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3 style="color:var(--muted); text-transform:uppercase; font-size:14px; letter-spacing:0.5px;">
+          Composite Score
+        </h3>
+        <div class="big" id="composite-score">—</div>
+        <div class="muted" id="composite-thresholds"></div>
+        <a class="action" href="/backtest?ticker={{ ticker }}" target="_blank">View backtest dashboard →</a>
+      </div>
+
+      <div class="section">
+        <h3 style="color:var(--muted); text-transform:uppercase; font-size:14px; letter-spacing:0.5px;">
+          Inputs
+        </h3>
+        <table id="inputs-tbl">
+          <thead>
+            <tr><th>Metric</th><th>Value</th><th>Source</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const TICKER = {{ ticker | tojson }};
+
+    function fmt(v, decimals=2) {
+      if (v === null || v === undefined || Number.isNaN(v)) return "—";
+      if (typeof v === "number") return v.toFixed(decimals);
+      return v;
+    }
+    function pct(v, decimals=1) {
+      if (v === null || v === undefined || Number.isNaN(v)) return "—";
+      return (v * 100).toFixed(decimals) + "%";
+    }
+    function money(v) {
+      if (v === null || v === undefined || Number.isNaN(v)) return "—";
+      if (Math.abs(v) >= 1e9) return "$" + (v/1e9).toFixed(2) + "B";
+      if (Math.abs(v) >= 1e6) return "$" + (v/1e6).toFixed(2) + "M";
+      return "$" + v.toFixed(2);
+    }
+
+    async function load() {
+      const r = await fetch(`/api/composite/${TICKER}`);
+      if (!r.ok) {
+        document.getElementById("loading").innerText = "Failed to load composite.";
+        return;
+      }
+      const data = await r.json();
+      const f = data.fundamentals || {};
+      const c = data.composite || {};
+      const t = data.trend || {};
+
+      document.getElementById("loading").style.display = "none";
+      document.getElementById("content").style.display = "block";
+
+      // Pillars
+      document.getElementById("val-score").innerText = fmt(c.valuation_score);
+      document.getElementById("val-detail").innerText =
+        `Trailing P/E: ${fmt(f.trailing_pe)} · Sector median: ${fmt(f.sector_median_pe)} · Ratio: ${fmt(f.valuation_ratio)}`;
+
+      document.getElementById("mom-score").innerText = fmt(c.momentum_score);
+      document.getElementById("mom-detail").innerText =
+        `14-day RSI: ${fmt(f.rsi_14)} (score ${fmt(f.rsi_score)}) · EPS surprise: ${fmt(f.eps_surprise_pct)}% (score ${fmt(f.eps_score)})`;
+
+      document.getElementById("dcf-score").innerText = fmt(c.dcf_score);
+      document.getElementById("dcf-detail").innerText =
+        `Intrinsic value/sh: ${money(f.intrinsic_value_per_share)} · Price: ${money(f.current_price)} · MoS: ${pct(f.margin_of_safety)} · Ke: ${pct(f.cost_of_equity)} · β: ${fmt(f.beta)}`;
+
+      // Composite + signal
+      document.getElementById("composite-score").innerText = fmt(c.composite_score);
+      document.getElementById("composite-thresholds").innerText =
+        `BUY ≥ ${fmt(c.buy_threshold)} · SELL ≤ ${fmt(c.sell_threshold)} · Trends shift: ${c.trend_adjustment >= 0 ? "+" : ""}${c.trend_adjustment} (${t.classification || "neutral"})`;
+
+      const pill = document.getElementById("signal-pill");
+      pill.className = "signal " + c.signal;
+      pill.innerText = c.signal || "HOLD";
+
+      // Inputs table
+      const rows = [
+        ["Sector",                         f.sector,                               "yfinance .info"],
+        ["Trailing P/E",                   fmt(f.trailing_pe),                     "yfinance .info.trailingPE"],
+        ["Sector median P/E",              fmt(f.sector_median_pe),                "median across universe"],
+        ["14-day RSI",                     fmt(f.rsi_14),                          "90d daily closes, Wilder RSI"],
+        ["EPS surprise (%)",               fmt(f.eps_surprise_pct),                "earnings_history / get_earnings_dates"],
+        ["Beta",                           fmt(f.beta),                            "yfinance .info.beta"],
+        ["Risk-free rate",                 pct(f.risk_free_rate),                  "^TNX 10-yr Treasury"],
+        ["Cost of equity (CAPM)",          pct(f.cost_of_equity),                  "Rf + β × 5.5% ERP"],
+        ["Free cash flow (TTM)",           money(f.free_cash_flow),                "yfinance .info.freeCashflow"],
+        ["Revenue growth",                 pct(f.revenue_growth),                  "yfinance .info.revenueGrowth"],
+        ["Total debt",                     money(f.total_debt),                    "yfinance .info.totalDebt"],
+        ["Total cash",                     money(f.total_cash),                    "yfinance .info.totalCash"],
+        ["Shares outstanding",             fmt(f.shares_outstanding, 0),           "yfinance .info.sharesOutstanding"],
+        ["Intrinsic value per share",      money(f.intrinsic_value_per_share),     "5y DCF + terminal value"],
+        ["Current price",                  money(f.current_price),                 "yfinance .info.currentPrice"],
+        ["Margin of safety",               pct(f.margin_of_safety),                "(IV − Price) / Price"],
+      ];
+      const tbody = document.querySelector("#inputs-tbl tbody");
+      rows.forEach(([m, v, s]) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${m}</td><td>${v}</td><td class="muted">${s}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+    load();
+  </script>
+</body>
+</html>
