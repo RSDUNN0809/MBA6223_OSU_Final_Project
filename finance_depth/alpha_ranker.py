@@ -86,7 +86,10 @@ def compute_alpha_table(
             log.debug("closes_for(%s) failed: %s", sym, exc)
             return None
 
-    bench_ret = _total_return_from_adj_close(closes_for(benchmark) or pd.Series(dtype=float))
+    bench_series = closes_for(benchmark)
+    if bench_series is None:
+        bench_series = pd.Series(dtype=float)
+    bench_ret = _total_return_from_adj_close(bench_series)
     if bench_ret is None:
         raise RuntimeError(f"Could not compute return for benchmark {benchmark}")
 
