@@ -1,6 +1,6 @@
 # LSP — Longshot Stock Prediction
 
-**MBA 6223 Final Project · Oklahoma State University**
+**MBA 6223 Final Project · The Ohio State Unviversity**
 **Author: R.S. Dunn**
 
 > An educational equity signal dashboard that applies a nine-factor scoring model to S&P 500 stocks, combining intraday price action, technical regime filters, macro sentiment, and Wall Street analyst consensus into a single daily BUY / HOLD / SELL verdict.
