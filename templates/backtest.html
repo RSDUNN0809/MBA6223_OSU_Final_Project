@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Backtest — MBA6223 LSP</title>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --panel: #121826;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --buy: #2ea043;
+      --sell: #f85149;
+      --hold: #d29922;
+      --accent: #58a6ff;
+      --border: #30363d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+    header {
+      padding: 20px 32px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header a { color: var(--accent); text-decoration: none; font-size: 14px; }
+    h1 { margin: 0; font-size: 28px; }
+    main { padding: 24px 32px; max-width: 1200px; margin: 0 auto; }
+    input, select, button {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      font-size: 14px;
+      border-radius: 6px;
+    }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 24px; }
+    .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .tile {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .tile h3 { margin: 0 0 12px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .kv { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+    .kv .k { color: var(--muted); }
+    .kv .v { font-weight: 600; }
+    .pos { color: var(--buy); }
+    .neg { color: var(--sell); }
+    .chart { margin-top: 24px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+    .muted { color: var(--muted); font-size: 12px; margin-top: 8px; }
+    #loading { color: var(--muted); padding: 24px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <div><a href="/">← Dashboard</a></div>
+    <h1>Backtest</h1>
+    <div></div>
+  </header>
+
+  <main>
+    <div class="controls">
+      <input id="ticker" placeholder="Ticker (e.g. AAPL)" value="AAPL"/>
+      <button id="run">Run Backtest</button>
+      <span class="muted">Windows: 1-month · 1-year · 5-year · composite-score signal</span>
+    </div>
+
+    <div id="loading"></div>
+
+    <div id="results" style="display:none">
+      <div class="tiles" id="summary-tiles"></div>
+      <div class="chart" id="chart-1mo"></div>
+      <div class="chart" id="chart-1y"></div>
+      <div class="chart" id="chart-5y"></div>
+
+      <p class="muted">
+        <strong>Interpretation.</strong> A positive <em>BUY minus SELL</em> spread means
+        BUY-signaled bars outperformed SELL-signaled bars on average — the core
+        proof-of-concept test. Accuracy measures how often BUY→positive and
+        SELL→negative forward returns. Cumulative strategy return compounds
+        long/short/flat bets with zero transaction costs; compare it to
+        buy-and-hold to see whether the signal added value.
+        Fundamentals (P/E, DCF) are held at their current values across the
+        window; RSI and price momentum are fully historical.
+      </p>
+    </div>
+  </main>
+
+  <script>
+    const tileEl = document.getElementById("summary-tiles");
+    const runBtn = document.getElementById("run");
+
+    // Pre-populate ticker from query string if provided (e.g. /backtest?ticker=AAPL)
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get("ticker")) {
+      document.getElementById("ticker").value = urlParams.get("ticker").toUpperCase();
+    }
+
+    function pct(v, d=2) {
+      if (v === null || v === undefined || Number.isNaN(v)) return "—";
+      return (v * 100).toFixed(d) + "%";
+    }
+    function cls(v) { return v > 0 ? "pos" : (v < 0 ? "neg" : ""); }
+
+    function tileHtml(label, s) {
+      return `
+        <div class="tile">
+          <h3>${label}</h3>
+          <div class="kv"><span class="k">BUY avg fwd return</span><span class="v ${cls(s.buy_avg_fwd_return)}">${pct(s.buy_avg_fwd_return)}</span></div>
+          <div class="kv"><span class="k">HOLD avg</span><span class="v">${pct(s.hold_avg_fwd_return)}</span></div>
+          <div class="kv"><span class="k">SELL avg</span><span class="v ${cls(-s.sell_avg_fwd_return)}">${pct(s.sell_avg_fwd_return)}</span></div>
+          <div class="kv"><span class="k">BUY − SELL</span><span class="v ${cls(s.buy_minus_sell)}">${pct(s.buy_minus_sell)}</span></div>
+          <div class="kv"><span class="k">Accuracy</span><span class="v">${pct(s.accuracy, 1)}</span></div>
+          <div class="kv"><span class="k">Strategy cum.</span><span class="v ${cls(s.cumulative_strategy_return)}">${pct(s.cumulative_strategy_return)}</span></div>
+          <div class="kv"><span class="k">Buy & hold</span><span class="v ${cls(s.cumulative_buy_and_hold)}">${pct(s.cumulative_buy_and_hold)}</span></div>
+          <div class="kv"><span class="k">n BUY / HOLD / SELL</span><span class="v">${s.n_buy} / ${s.n_hold} / ${s.n_sell}</span></div>
+        </div>`;
+    }
+
+    function plotWindow(divId, title, rows) {
+      if (!rows || !rows.length) {
+        document.getElementById(divId).innerHTML = `<div class="muted">No data for ${title}</div>`;
+        return;
+      }
+      const dates = rows.map(r => r.date);
+      const prices = rows.map(r => r.price);
+      const composites = rows.map(r => r.composite);
+
+      const buys  = rows.filter(r => r.signal === "BUY");
+      const sells = rows.filter(r => r.signal === "SELL");
+
+      const traces = [
+        {
+          type: "scatter", mode: "lines", name: "Price",
+          x: dates, y: prices, yaxis: "y1", line: { color: "#58a6ff" }
+        },
+        {
+          type: "scatter", mode: "lines", name: "Composite",
+          x: dates, y: composites, yaxis: "y2", line: { color: "#8b949e", dash: "dot" }
+        },
+        {
+          type: "scatter", mode: "markers", name: "BUY",
+          x: buys.map(r => r.date), y: buys.map(r => r.price),
+          marker: { color: "#2ea043", size: 9, symbol: "triangle-up" }, yaxis: "y1"
+        },
+        {
+          type: "scatter", mode: "markers", name: "SELL",
+          x: sells.map(r => r.date), y: sells.map(r => r.price),
+          marker: { color: "#f85149", size: 9, symbol: "triangle-down" }, yaxis: "y1"
+        },
+      ];
+      const layout = {
+        title: title,
+        paper_bgcolor: "#121826",
+        plot_bgcolor: "#121826",
+        font: { color: "#e6edf3" },
+        margin: { l: 48, r: 48, t: 40, b: 40 },
+        yaxis:  { title: "Price",     side: "left"  },
+        yaxis2: { title: "Composite", side: "right", overlaying: "y", range: [0, 100] },
+        legend: { orientation: "h", y: -0.2 },
+      };
+      Plotly.newPlot(divId, traces, layout, { displayModeBar: false, responsive: true });
+    }
+
+    async function runBacktest() {
+      const ticker = document.getElementById("ticker").value.trim().toUpperCase() || "AAPL";
+      document.getElementById("results").style.display = "none";
+      document.getElementById("loading").innerText = `Running backtest for ${ticker} …`;
+      const r = await fetch(`/api/backtest/${ticker}`);
+      const data = await r.json();
+      if (!r.ok) {
+        document.getElementById("loading").innerText = `Error: ${data.error || r.statusText}`;
+        return;
+      }
+      document.getElementById("loading").innerText = "";
+      document.getElementById("results").style.display = "block";
+      tileEl.innerHTML =
+        tileHtml("1-Month",  data["1mo"].summary) +
+        tileHtml("1-Year",   data["1y"].summary) +
+        tileHtml("5-Year",   data["5y"].summary);
+
+      plotWindow("chart-1mo", `${ticker} — 1 Month`,  data["1mo"].rows);
+      plotWindow("chart-1y",  `${ticker} — 1 Year`,   data["1y"].rows);
+      plotWindow("chart-5y",  `${ticker} — 5 Years`,  data["5y"].rows);
+    }
+
+    runBtn.addEventListener("click", runBacktest);
+    document.getElementById("ticker").addEventListener("keydown", e => {
+      if (e.key === "Enter") runBacktest();
+    });
+    // Auto-run on load
+    runBacktest();
+  </script>
+</body>
+</html>

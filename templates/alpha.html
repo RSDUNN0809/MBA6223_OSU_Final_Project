@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Alpha Ranking — MBA6223 LSP</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --panel: #121826;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --buy: #2ea043;
+      --sell: #f85149;
+      --hold: #d29922;
+      --accent: #58a6ff;
+      --border: #30363d;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 13px;
+    }
+    header {
+      padding: 16px 32px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header a { color: var(--accent); text-decoration: none; font-size: 13px; }
+    header h1 { font-size: 20px; font-weight: 600; }
+    .meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    main { padding: 24px 32px; max-width: 1100px; margin: 0 auto; }
+
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 8px; }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .card-header h2 { font-size: 14px; font-weight: 600; }
+    .badge-top  { background: rgba(46,160,67,0.2);  color: var(--buy);  font-size: 10px; padding: 2px 8px; border-radius: 20px; font-weight: 600; }
+    .badge-bot  { background: rgba(248,81,73,0.2);  color: var(--sell); font-size: 10px; padding: 2px 8px; border-radius: 20px; font-weight: 600; }
+
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      padding: 10px 20px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    th.right, td.right { text-align: right; }
+    td {
+      padding: 11px 20px;
+      border-bottom: 1px solid rgba(48,54,61,0.5);
+      font-size: 12px;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+
+    .ticker { font-weight: 600; color: var(--accent); font-family: monospace; font-size: 13px; }
+    .rank   { color: var(--muted); width: 28px; font-variant-numeric: tabular-nums; }
+
+    .pos { color: var(--buy); }
+    .neg { color: var(--sell); }
+
+    .bar-cell { width: 100px; }
+    .bar-wrap { height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
+    .bar-fill.pos { background: var(--buy); }
+    .bar-fill.neg { background: var(--sell); }
+
+    .drill-link { color: var(--accent); text-decoration: none; font-size: 11px; opacity: 0.7; }
+    .drill-link:hover { opacity: 1; }
+
+    .trend-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .trend-pill .shift { font-weight: 600; }
+    .shift.pos { color: var(--buy); }
+    .shift.neg { color: var(--sell); }
+    .shift.zero { color: var(--muted); }
+
+    #loading { color: var(--muted); padding: 48px 0; text-align: center; font-size: 14px; }
+    #error   { color: var(--sell);  padding: 48px 0; text-align: center; font-size: 14px; }
+    #error .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <a href="/">← Dashboard</a>
+      <h1 style="margin-top:6px;">Alpha Ranking</h1>
+      <div class="meta" id="meta">12-month trailing alpha vs S&amp;P 500 benchmark</div>
+    </div>
+    <div id="trend-pill-wrap"></div>
+  </header>
+
+  <main>
+    <div id="loading">Loading alpha rankings…</div>
+    <div id="error" style="display:none"></div>
+    <div id="content" style="display:none">
+      <div class="grid">
+        <div class="card" id="top-card">
+          <div class="card-header">
+            <h2>Top Outperformers</h2>
+            <span class="badge-top">ALPHA+</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Ticker</th>
+                <th class="right">12m Return</th>
+                <th class="right">Alpha</th>
+                <th class="bar-cell"></th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="top-body"></tbody>
+          </table>
+        </div>
+
+        <div class="card" id="bot-card">
+          <div class="card-header">
+            <h2>Bottom Underperformers</h2>
+            <span class="badge-bot">ALPHA−</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Ticker</th>
+                <th class="right">12m Return</th>
+                <th class="right">Alpha</th>
+                <th class="bar-cell"></th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="bot-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    function pct(v, decimals=1) {
+      if (v === null || v === undefined) return '—';
+      const sign = v >= 0 ? '+' : '';
+      return sign + (v * 100).toFixed(decimals) + '%';
+    }
+    function cls(v) { return v >= 0 ? 'pos' : 'neg'; }
+
+    function buildRows(rows, tbody, maxAbsAlpha) {
+      tbody.innerHTML = rows.map((r, i) => {
+        const barWidth = maxAbsAlpha > 0 ? Math.min(100, Math.abs(r.alpha_12m) / maxAbsAlpha * 100) : 0;
+        const alphaCls = cls(r.alpha_12m);
+        return `
+          <tr>
+            <td class="rank">${i + 1}</td>
+            <td><span class="ticker">${r.ticker}</span></td>
+            <td class="right ${cls(r.total_return_12m)}">${pct(r.total_return_12m)}</td>
+            <td class="right ${alphaCls}">${pct(r.alpha_12m)}</td>
+            <td class="bar-cell">
+              <div class="bar-wrap">
+                <div class="bar-fill ${alphaCls}" style="width:${barWidth.toFixed(1)}%"></div>
+              </div>
+            </td>
+            <td>
+              <a class="drill-link" href="/drilldown/${r.ticker}" target="_blank">Deep dive →</a>
+            </td>
+          </tr>`;
+      }).join('');
+    }
+
+    async function load() {
+      try {
+        const r = await fetch('/api/alpha');
+        const data = await r.json();
+
+        if (!r.ok) {
+          document.getElementById('loading').style.display = 'none';
+          const errEl = document.getElementById('error');
+          errEl.style.display = 'block';
+          errEl.innerHTML = `<div>Alpha data not available yet.</div><div class="hint">${data.hint || 'Trigger a refresh and check back shortly.'}</div>`;
+          return;
+        }
+
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('content').style.display = 'block';
+
+        // Meta line
+        if (data.generated_at) {
+          const d = new Date(data.generated_at);
+          document.getElementById('meta').textContent =
+            `12-month trailing alpha vs ${data.benchmark || '^GSPC'} · Generated ${d.toLocaleString()}`;
+        }
+
+        // Trend pill
+        const trend = data.trend || {};
+        const shift = trend.threshold_shift ?? 0;
+        const cls2  = shift > 0 ? 'pos' : shift < 0 ? 'neg' : 'zero';
+        const sign  = shift > 0 ? '+' : '';
+        document.getElementById('trend-pill-wrap').innerHTML = `
+          <div class="trend-pill">
+            Sentiment: <strong>${trend.classification || 'neutral'}</strong>
+            &nbsp;·&nbsp; Threshold shift: <span class="shift ${cls2}">${sign}${shift}</span>
+          </div>`;
+
+        // Rows
+        const top = data.top || [];
+        const bot = data.bottom || [];
+        const maxAbsAlpha = Math.max(...[...top, ...bot].map(r => Math.abs(r.alpha_12m)), 0.001);
+
+        buildRows(top, document.getElementById('top-body'), maxAbsAlpha);
+        buildRows(bot, document.getElementById('bot-body'), maxAbsAlpha);
+
+      } catch(e) {
+        document.getElementById('loading').style.display = 'none';
+        const errEl = document.getElementById('error');
+        errEl.style.display = 'block';
+        errEl.innerHTML = `<div>Failed to load: ${e.message}</div>`;
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

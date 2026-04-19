@@ -1,34 +1,33 @@
 """
-trends.py — Google Trends data via pytrends.
+trends.py — Market-based macro sentiment indicators.
 
-Public API
-----------
-get_macro_trends() -> list[dict]
-    Returns the 10 fixed finance/macro terms with their relative search
-    volume scores (0–100) for the past 7 days.
+Replaces pytrends (unreliable from cloud hosts due to Google rate-limiting)
+with yfinance market proxies. Each macro term maps to a ticker whose recent
+behaviour serves as a proxy for how "hot" that topic is in markets right now.
 
-compute_macro_vote(trends) -> int
-    Aggregates trend scores into a single directional vote:
-    +1 (bullish), 0 (neutral), -1 (bearish).
-
-Rate limits
+Proxy logic
 -----------
-pytrends can be throttled by Google.  We fetch in a single batch (all 10
-terms at once) and apply exponential backoff with jitter on failure.
-If all retries fail, we return neutral scores (50) so the app stays usable.
+  return_5d   : 5-day total return → 50 = flat, +5% → 100, -5% → 0
+  return_20d  : 20-day return → 50 = flat, +10% → 100, -10% → 0
+  level       : current value as % of its 52-week range (0 = yearly low, 100 = high)
+  level_inv   : inverted level (higher raw value → lower score, e.g. recession fear)
+  change_5d   : absolute 5-day change in level, scaled to 0-100
+  vol_ratio   : today's volume vs 20-day avg volume, scaled to 0-100
+
+Scores are clipped to [0, 100] and rounded to the nearest integer.
 """
 from __future__ import annotations
 
 import logging
-import random
-import time
 from typing import Optional
 
-from pytrends.request import TrendReq
+import numpy as np
+import pandas as pd
+import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
-# The 10 fixed macro search terms tracked every day
+# Fixed term order (display order in the UI)
 MACRO_TERMS: list[str] = [
     "stock market",
     "inflation",
@@ -42,104 +41,170 @@ MACRO_TERMS: list[str] = [
     "oil prices",
 ]
 
-# Terms associated with bullish / bearish market sentiment
+# (ticker, method) for each term
+_PROXIES: dict[str, tuple[str, str]] = {
+    "stock market":    ("^GSPC", "return_5d"),
+    "inflation":       ("^TNX",  "level"),        # 10-yr yield: high yield = high inflation concern
+    "Federal Reserve": ("^IRX",  "level"),        # 3-month T-bill: proxy for fed funds expectation
+    "interest rates":  ("^TNX",  "change_5d"),    # recent move in yields
+    "recession":       ("^VIX",  "level_inv"),    # VIX high = fear high, inverted so high fear = high score
+    "S&P 500":         ("^GSPC", "return_20d"),   # broader 20-day momentum
+    "unemployment":    ("^VIX",  "change_5d"),    # rising VIX → growing worry about labour market
+    "GDP":             ("SPY",   "return_20d"),   # broad market as growth proxy
+    "earnings report": ("SPY",   "vol_ratio"),    # volume spike = heightened earnings activity
+    "oil prices":      ("CL=F",  "return_5d"),    # crude oil 5-day move
+}
+
+_NEUTRAL = 50
+_TICKERS = list(dict.fromkeys(t for t, _ in _PROXIES.values()))
 _BULLISH_TERMS = {"stock market", "S&P 500", "earnings report"}
 _BEARISH_TERMS = {"recession", "unemployment"}
 
-# Neutral fallback score when pytrends is unavailable
-_NEUTRAL_SCORE = 50
 
-# Retry settings
-_MAX_RETRIES = 4
-_BASE_DELAY_S = 2.0
+def _clip(x: float) -> int:
+    return int(round(max(0.0, min(100.0, x))))
 
 
-def _fetch_with_retry() -> Optional[dict[str, int]]:
+def _score_return(ret: float, scale: float = 10.0) -> int:
+    """ret is a decimal (e.g. 0.03 for +3%). scale maps ±(1/scale) → ±50 pts."""
+    return _clip(50.0 + ret * scale * 100.0)
+
+
+def _score_level(series: pd.Series) -> int:
+    """Current value as % of the series' full range."""
+    lo, hi = series.min(), series.max()
+    if hi == lo:
+        return _NEUTRAL
+    return _clip((series.iloc[-1] - lo) / (hi - lo) * 100.0)
+
+
+def _score_level_inv(series: pd.Series) -> int:
+    return 100 - _score_level(series)
+
+
+def _score_change(series: pd.Series, window: int = 5, scale: float = 5.0) -> int:
+    """Absolute change over `window` bars as a % of level, scaled."""
+    if len(series) < window + 1:
+        return _NEUTRAL
+    recent = series.iloc[-1]
+    past   = series.iloc[-(window + 1)]
+    if past == 0:
+        return _NEUTRAL
+    change_pct = (recent - past) / abs(past)
+    return _clip(50.0 + change_pct * scale * 100.0)
+
+
+def _score_vol_ratio(hist: pd.DataFrame, window: int = 20) -> int:
+    if "Volume" not in hist.columns or len(hist) < window + 1:
+        return _NEUTRAL
+    avg_vol = hist["Volume"].iloc[-window - 1:-1].mean()
+    if avg_vol == 0:
+        return _NEUTRAL
+    ratio = hist["Volume"].iloc[-1] / avg_vol   # 1.0 = normal
+    return _clip(ratio * 50.0)                   # 2× avg → 100, 0× → 0
+
+
+def _compute_scores() -> dict[str, int]:
     """
-    Fetch relative search volume for all MACRO_TERMS in a single pytrends
-    request.  Returns {term: score (0-100)} or None on persistent failure.
+    Download 1-year daily history for all proxy tickers in one batch,
+    then compute each term's score. Falls back to _NEUTRAL per term on error.
     """
-    pytrends = TrendReq(hl="en-US", tz=-300)  # tz offset in minutes for ET (UTC-5)
+    scores: dict[str, int] = {}
 
-    for attempt in range(_MAX_RETRIES):
+    try:
+        data = yf.download(
+            tickers=_TICKERS,
+            period="1y",
+            interval="1d",
+            auto_adjust=True,
+            group_by="ticker",
+            threads=True,
+            progress=False,
+        )
+    except Exception as exc:
+        logger.warning("yfinance batch download failed: %s", exc)
+        return {term: _NEUTRAL for term in MACRO_TERMS}
+
+    def get_close(ticker: str) -> Optional[pd.Series]:
         try:
-            pytrends.build_payload(
-                MACRO_TERMS,
-                cat=0,
-                timeframe="now 7-d",
-                geo="US",
-            )
-            df = pytrends.interest_over_time()
+            if isinstance(data.columns, pd.MultiIndex):
+                return data[ticker]["Close"].dropna() if ticker in data.columns.get_level_values(0) else None
+            return data["Close"].dropna() if len(_TICKERS) == 1 else None
+        except Exception:
+            return None
 
-            if df is None or df.empty:
-                raise ValueError("Empty response from pytrends")
+    def get_hist(ticker: str) -> Optional[pd.DataFrame]:
+        try:
+            if isinstance(data.columns, pd.MultiIndex):
+                return data[ticker].dropna(how="all") if ticker in data.columns.get_level_values(0) else None
+            return data.dropna(how="all") if len(_TICKERS) == 1 else None
+        except Exception:
+            return None
 
-            # Drop the 'isPartial' column if present
-            if "isPartial" in df.columns:
-                df = df.drop(columns=["isPartial"])
+    for term, (ticker, method) in _PROXIES.items():
+        try:
+            close = get_close(ticker)
+            if close is None or len(close) < 6:
+                scores[term] = _NEUTRAL
+                continue
 
-            # Average score over the returned time window for each term
-            scores: dict[str, int] = {
-                term: int(round(df[term].mean())) for term in MACRO_TERMS if term in df.columns
-            }
-            # Fill any missing terms with neutral score
-            for term in MACRO_TERMS:
-                scores.setdefault(term, _NEUTRAL_SCORE)
+            if method == "return_5d":
+                ret = (close.iloc[-1] / close.iloc[-6] - 1.0) if len(close) >= 6 else 0.0
+                scores[term] = _score_return(ret, scale=10.0)
 
-            logger.info("Google Trends fetched successfully.")
-            return scores
+            elif method == "return_20d":
+                idx = min(20, len(close) - 1)
+                ret = (close.iloc[-1] / close.iloc[-idx - 1] - 1.0)
+                scores[term] = _score_return(ret, scale=5.0)
+
+            elif method == "level":
+                scores[term] = _score_level(close)
+
+            elif method == "level_inv":
+                scores[term] = _score_level_inv(close)
+
+            elif method == "change_5d":
+                scores[term] = _score_change(close, window=5)
+
+            elif method == "vol_ratio":
+                hist_df = get_hist(ticker)
+                scores[term] = _score_vol_ratio(hist_df) if hist_df is not None else _NEUTRAL
+
+            else:
+                scores[term] = _NEUTRAL
 
         except Exception as exc:
-            delay = _BASE_DELAY_S * (2 ** attempt) + random.uniform(0, 1)
-            logger.warning(
-                "pytrends attempt %d/%d failed (%s) — retrying in %.1fs",
-                attempt + 1, _MAX_RETRIES, exc, delay,
-            )
-            time.sleep(delay)
+            logger.debug("score(%s, %s) failed: %s", term, ticker, exc)
+            scores[term] = _NEUTRAL
 
-    logger.error("All pytrends retries exhausted — returning neutral fallback scores.")
-    return None
+    return scores
 
 
 def get_macro_trends() -> list[dict]:
     """
     Return a sorted list of dicts for the 10 macro terms.
-
     Each dict: {"term": str, "score": int (0-100)}
-    Sorted by score descending (highest interest first).
+    Sorted by score descending.
     """
-    raw_scores = _fetch_with_retry()
-    scores = raw_scores if raw_scores else {t: _NEUTRAL_SCORE for t in MACRO_TERMS}
-
-    result = [{"term": term, "score": scores.get(term, _NEUTRAL_SCORE)} for term in MACRO_TERMS]
+    raw = _compute_scores()
+    result = [{"term": t, "score": raw.get(t, _NEUTRAL)} for t in MACRO_TERMS]
     result.sort(key=lambda x: x["score"], reverse=True)
     return result
 
 
 def compute_macro_vote(trends: list[dict]) -> int:
     """
-    Aggregate the 10 trend scores into a single directional vote.
-
-    Bullish terms (stock market, S&P 500, earnings report):
-        High interest → people are engaged with markets → slight bullish signal.
-    Bearish terms (recession, unemployment):
-        High interest → fear / negative macro → bearish signal.
-
-    Returns +1 (bullish), -1 (bearish), or 0 (neutral).
-    The threshold is 15 percentage points to avoid noise.
+    Aggregate scores into +1 (bullish), -1 (bearish), 0 (neutral).
+    Threshold: 15-point spread between bullish and bearish term averages.
     """
     if not trends:
         return 0
-
     term_scores = {t["term"]: t["score"] for t in trends}
-
-    bullish_avg = sum(term_scores.get(t, _NEUTRAL_SCORE) for t in _BULLISH_TERMS) / len(_BULLISH_TERMS)
-    bearish_avg = sum(term_scores.get(t, _NEUTRAL_SCORE) for t in _BEARISH_TERMS) / len(_BEARISH_TERMS)
-
-    diff = (bullish_avg - bearish_avg) / 100.0  # normalise to [-1, +1] range
-
+    bull_avg = sum(term_scores.get(t, _NEUTRAL) for t in _BULLISH_TERMS) / len(_BULLISH_TERMS)
+    bear_avg = sum(term_scores.get(t, _NEUTRAL) for t in _BEARISH_TERMS) / len(_BEARISH_TERMS)
+    diff = (bull_avg - bear_avg) / 100.0
     if diff > 0.15:
         return 1
-    elif diff < -0.15:
+    if diff < -0.15:
         return -1
     return 0
